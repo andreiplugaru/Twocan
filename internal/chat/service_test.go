@@ -395,7 +395,7 @@ func TestFlushInterruptedThenResumed(t *testing.T) {
 		_, err := a.svc.Send(t.Context(), b.id(), strings.Repeat("m", i+1))
 		require.NoError(t, err)
 	}
-	a.svc.wg.Wait() // let the background flushes started by Send fail first
+	a.svc.tasks.Wait() // let the background flushes started by Send fail first
 	goOnline(t, mn, a, b)
 
 	require.Error(t, a.svc.Flush(t.Context(), b.id()))
@@ -442,7 +442,7 @@ func TestReceiverStoreFailureNotAcked(t *testing.T) {
 
 	m, err := a.svc.Send(t.Context(), b.id(), "not acked")
 	require.NoError(t, err)
-	a.svc.wg.Wait() // the background flush fails too
+	a.svc.tasks.Wait() // the background flush fails too
 	require.Error(t, a.svc.Flush(t.Context(), b.id()))
 	p := a.pending(t, b.id())
 	require.Len(t, p, 1)

@@ -28,6 +28,7 @@ import (
 	"twocan/internal/p2p"
 	pb "twocan/internal/proto"
 	"twocan/internal/store"
+	"twocan/internal/svc"
 	"twocan/internal/wire"
 )
 
@@ -79,23 +80,19 @@ type Service struct {
 	// beforeWrite, if set, runs between reading and writing a contact (tests).
 	beforeWrite func(peer.ID)
 
-	ctx    context.Context // service lifetime; cancelled by Close
-	cancel context.CancelFunc
+	tasks      *svc.Tracker // async flushes and inbound handlers
+	flushLocks svc.Locks[peer.ID]
 
 	// stateMu serialises every get-modify-upsert of a contact row.
 	stateMu sync.Mutex
 
-	mu         sync.Mutex // guards the fields below
-	closed     bool
-	wg         sync.WaitGroup // async flushes and inbound handlers
-	flushLocks map[peer.ID]*sync.Mutex
-	limiters   map[peer.ID]*rate.Limiter
+	mu       sync.Mutex // guards limiters
+	limiters map[peer.ID]*rate.Limiter
 }
 
 // New returns a Service. displayName returns our current display name, sent
 // with every Request and Accept. Call Start to accept inbound streams.
 func New(h host.Host, st *store.Store, r p2p.Reacher, bus *event.Bus, displayName func() string) *Service {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
 		h:           h,
 		st:          st,
@@ -103,9 +100,7 @@ func New(h host.Host, st *store.Store, r p2p.Reacher, bus *event.Bus, displayNam
 		bus:         bus,
 		displayName: displayName,
 		readTimeout: exchangeTimeout,
-		ctx:         ctx,
-		cancel:      cancel,
-		flushLocks:  make(map[peer.ID]*sync.Mutex),
+		tasks:       svc.NewTracker(),
 		limiters:    make(map[peer.ID]*rate.Limiter),
 	}
 }
@@ -119,34 +114,13 @@ func (s *Service) Start() {
 // them and any in-flight inbound handlers to finish.
 func (s *Service) Close() {
 	s.h.RemoveStreamHandler(ProtocolID)
-	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
-	s.cancel()
-	s.wg.Wait()
-}
-
-// track registers one background task; it returns false once closed.
-func (s *Service) track() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return false
-	}
-	s.wg.Add(1)
-	return true
+	s.tasks.Close()
 }
 
 // flushAsync flushes id in the background. Errors are dropped: the caller's
 // reconnect loop retries later.
 func (s *Service) flushAsync(id peer.ID) {
-	if !s.track() {
-		return
-	}
-	go func() {
-		defer s.wg.Done()
-		_ = s.Flush(s.ctx, id)
-	}()
+	s.tasks.Go(func(ctx context.Context) { _ = s.Flush(ctx, id) })
 }
 
 func (s *Service) changed(id peer.ID) {
@@ -297,9 +271,7 @@ func (s *Service) Reject(ctx context.Context, id peer.ID) error {
 // an Accept when accepted. On ack it clears PendingSend. Concurrent flushes
 // to the same peer run one at a time.
 func (s *Service) Flush(ctx context.Context, id peer.ID) error {
-	l := s.flushLock(id)
-	l.Lock()
-	defer l.Unlock()
+	defer s.flushLocks.Lock(id)()
 
 	c, found, err := s.getContact(ctx, id)
 	if err != nil || !found || !c.PendingSend {
@@ -344,13 +316,7 @@ func (s *Service) exchange(ctx context.Context, id peer.ID, f *pb.ContactFrame) 
 	if err != nil {
 		return err
 	}
-	// The deadline is not enough on its own: some transports (mocknet among
-	// them) ignore it. Resetting on ctx expiry also unblocks us on Close.
-	if dl, ok := ctx.Deadline(); ok {
-		_ = str.SetDeadline(dl)
-	}
-	stop := context.AfterFunc(ctx, func() { str.Reset() })
-	defer stop()
+	defer svc.Guard(ctx, str)()
 	if err := wire.WriteFrame(str, f); err != nil {
 		str.Reset()
 		return err
@@ -365,17 +331,6 @@ func (s *Service) exchange(ctx context.Context, id peer.ID, f *pb.ContactFrame) 
 		return errNoAck
 	}
 	return nil
-}
-
-func (s *Service) flushLock(id peer.ID) *sync.Mutex {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	l, ok := s.flushLocks[id]
-	if !ok {
-		l = new(sync.Mutex)
-		s.flushLocks[id] = l
-	}
-	return l
 }
 
 // allowRequest applies the per-peer request rate limit.
@@ -409,19 +364,16 @@ func (s *Service) pruneLimiters() {
 // could not be stored the stream is reset instead: the sender keeps
 // PendingSend and retries, and a reset looks like any transport failure.
 func (s *Service) handleStream(str network.Stream) {
-	if !s.track() {
+	if !s.tasks.Track() {
 		str.Reset()
 		return
 	}
-	defer s.wg.Done()
+	defer s.tasks.Done()
 
-	// A silent peer must not hold the stream open: reset it when the exchange
-	// times out (deadlines alone are ignored by some transports) or on Close.
-	_ = str.SetDeadline(time.Now().Add(s.readTimeout))
-	ctx, cancel := context.WithTimeout(s.ctx, s.readTimeout)
+	// A silent peer must not hold the stream open: it is reset when the
+	// exchange times out or on Close.
+	ctx, cancel := svc.Timeout(s.tasks.Context(), str, s.readTimeout)
 	defer cancel()
-	stop := context.AfterFunc(ctx, func() { str.Reset() })
-	defer stop()
 	remote := str.Conn().RemotePeer()
 
 	var f pb.ContactFrame

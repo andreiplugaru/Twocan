@@ -18,7 +18,6 @@ import (
 	"errors"
 	"io"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -31,6 +30,7 @@ import (
 	"twocan/internal/p2p"
 	pb "twocan/internal/proto"
 	"twocan/internal/store"
+	"twocan/internal/svc"
 	"twocan/internal/wire"
 )
 
@@ -77,27 +77,19 @@ type Service struct {
 	// far; returning true resets the stream (tests).
 	afterAck func(n int) bool
 
-	ctx    context.Context // service lifetime; cancelled by Close
-	cancel context.CancelFunc
-
-	mu         sync.Mutex // guards the fields below
-	closed     bool
-	wg         sync.WaitGroup // async flushes and inbound handlers
-	flushLocks map[peer.ID]*sync.Mutex
+	tasks      *svc.Tracker // async flushes and inbound handlers
+	flushLocks svc.Locks[peer.ID]
 }
 
 // New returns a Service. Call Start to accept inbound streams.
 func New(h host.Host, st *store.Store, r p2p.Reacher, bus *event.Bus) *Service {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
 		h:           h,
 		st:          st,
 		r:           r,
 		bus:         bus,
 		readTimeout: frameTimeout,
-		ctx:         ctx,
-		cancel:      cancel,
-		flushLocks:  make(map[peer.ID]*sync.Mutex),
+		tasks:       svc.NewTracker(),
 	}
 }
 
@@ -110,45 +102,13 @@ func (s *Service) Start() {
 // them and any in-flight inbound handlers to finish.
 func (s *Service) Close() {
 	s.h.RemoveStreamHandler(ProtocolID)
-	s.mu.Lock()
-	s.closed = true
-	s.mu.Unlock()
-	s.cancel()
-	s.wg.Wait()
-}
-
-// track registers one background task; it returns false once closed.
-func (s *Service) track() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return false
-	}
-	s.wg.Add(1)
-	return true
+	s.tasks.Close()
 }
 
 // flushAsync flushes id in the background. Errors are dropped: the caller's
 // reconnect loop retries later.
 func (s *Service) flushAsync(id peer.ID) {
-	if !s.track() {
-		return
-	}
-	go func() {
-		defer s.wg.Done()
-		_ = s.Flush(s.ctx, id)
-	}()
-}
-
-func (s *Service) flushLock(id peer.ID) *sync.Mutex {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	l, ok := s.flushLocks[id]
-	if !ok {
-		l = new(sync.Mutex)
-		s.flushLocks[id] = l
-	}
-	return l
+	s.tasks.Go(func(ctx context.Context) { _ = s.Flush(ctx, id) })
 }
 
 // checkText validates message text, for sending and receiving alike.
@@ -219,9 +179,7 @@ func v7Millis(id uuid.UUID) int64 {
 // Ack arrives. It stops at the first error and returns it; what was not acked
 // stays pending. Concurrent flushes to the same peer run one at a time.
 func (s *Service) Flush(ctx context.Context, id peer.ID) error {
-	l := s.flushLock(id)
-	l.Lock()
-	defer l.Unlock()
+	defer s.flushLocks.Lock(id)()
 
 	pending, err := s.st.PendingOutgoing(ctx, id)
 	if err != nil || len(pending) == 0 {
@@ -271,15 +229,8 @@ func (s *Service) open(ctx context.Context, id peer.ID) (network.Stream, error) 
 
 // deliver writes m on str and waits for its Ack, within readTimeout.
 func (s *Service) deliver(ctx context.Context, str network.Stream, r *bufio.Reader, m store.Message) error {
-	ctx, cancel := context.WithTimeout(ctx, s.readTimeout)
+	_, cancel := svc.Timeout(ctx, str, s.readTimeout)
 	defer cancel()
-	// Deadlines are not enough on their own: some transports (mocknet among
-	// them) ignore them. Resetting on ctx expiry also unblocks us on Close.
-	if dl, ok := ctx.Deadline(); ok {
-		_ = str.SetDeadline(dl)
-	}
-	stop := context.AfterFunc(ctx, func() { str.Reset() })
-	defer stop()
 
 	f := &pb.ChatFrame{Body: &pb.ChatFrame_Message{Message: &pb.ChatMessage{
 		Id: m.ID, SentAt: m.SentAt.UnixMilli(), Text: m.Text,
@@ -304,24 +255,26 @@ func (s *Service) deliver(ctx context.Context, str network.Stream, r *bufio.Read
 // the message pending and retries, and a reset looks like any transport
 // failure.
 func (s *Service) handleStream(str network.Stream) {
-	if !s.track() {
+	if !s.tasks.Track() {
 		str.Reset()
 		return
 	}
-	defer s.wg.Done()
+	defer s.tasks.Done()
 	remote := str.Conn().RemotePeer()
 
-	if err := s.withTimeout(str, func(ctx context.Context) error {
-		return s.requireAccepted(ctx, remote)
-	}); err != nil {
+	// Each step gets its own timeout, so a silent peer can't hold the stream.
+	ctx, cancel := svc.Timeout(s.tasks.Context(), str, s.readTimeout)
+	err := s.requireAccepted(ctx, remote)
+	cancel()
+	if err != nil {
 		str.Reset()
 		return
 	}
 	r := bufio.NewReader(str)
 	for acked := 0; ; acked++ {
-		err := s.withTimeout(str, func(ctx context.Context) error {
-			return s.receive(ctx, str, r, remote, acked)
-		})
+		ctx, cancel := svc.Timeout(s.tasks.Context(), str, s.readTimeout)
+		err := s.receive(ctx, str, r, remote, acked)
+		cancel()
 		if errors.Is(err, io.EOF) {
 			str.Close()
 			return
@@ -331,18 +284,6 @@ func (s *Service) handleStream(str network.Stream) {
 			return
 		}
 	}
-}
-
-// withTimeout runs fn with a context bounded by readTimeout and the service
-// lifetime; str is reset if that context ends first, so a silent peer can't
-// hold the stream (deadlines alone are ignored by some transports).
-func (s *Service) withTimeout(str network.Stream, fn func(ctx context.Context) error) error {
-	_ = str.SetDeadline(time.Now().Add(s.readTimeout))
-	ctx, cancel := context.WithTimeout(s.ctx, s.readTimeout)
-	defer cancel()
-	stop := context.AfterFunc(ctx, func() { str.Reset() })
-	defer stop()
-	return fn(ctx)
 }
 
 // receive reads, stores and acks one ChatMessage frame. It returns io.EOF
