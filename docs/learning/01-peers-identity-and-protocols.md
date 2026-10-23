@@ -4,9 +4,9 @@ This note explains the ideas behind the first runnable Twocan (the CLI). There i
 
 ## A peer ID is a public key
 
-When Twocan first runs it creates an Ed25519 key pair and saves the private half in `identity.key` ([internal/identity/key.go](../../internal/identity/key.go)). Your **peer ID** is a hash-based encoding of the public key (the `12D3KooW...` string). Nobody assigns it and nobody can take it; it is simply who you are.
+When Twocan first runs it creates an Ed25519 key pair and saves the private half in `identity.key` ([internal/identity/key.go](../../internal/identity/key.go)). Your **peer ID** is that public key written in a compact text form (the `12D3KooW...` string). For Ed25519 keys libp2p does not even hash it: the public key is embedded in the ID itself, so anyone holding the ID can check signatures from that key. Nobody assigns IDs and nobody can take yours; it is simply who you are.
 
-**Why it can't be spoofed.** Every connection starts with a *Noise* handshake ([internal/p2p/node.go](../../internal/p2p/node.go) builds the libp2p host). Both sides prove they hold the private key behind the peer ID they claim, and then all traffic is encrypted with keys derived from that exchange. When you dial a peer ID, you either reach the holder of that key or the handshake fails. So a *contact card* ([internal/identity/card.go](../../internal/identity/card.go)) only needs to carry a peer ID plus a few addresses: addresses are hints for finding someone, the peer ID is the authentication.
+**Why it can't be spoofed.** Every connection starts with a security handshake. We do not pick one in [internal/p2p/node.go](../../internal/p2p/node.go); libp2p's defaults offer Noise and TLS 1.3 and the two peers agree on one. Either way, each side proves it holds the private key behind the peer ID it claims, and then all traffic is encrypted with keys derived from that exchange. When you dial a peer ID, you either reach the holder of that key or the handshake fails. So a *contact card* ([internal/identity/card.go](../../internal/identity/card.go)) only needs to carry a peer ID plus a few addresses: addresses are hints for finding someone, the peer ID is the authentication.
 
 ## The peerstore
 
