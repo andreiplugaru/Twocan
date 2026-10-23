@@ -184,3 +184,64 @@ func TestSettings(t *testing.T) {
 	v, _, _ = s.GetSetting(ctx, SettingDisplayName)
 	require.Equal(t, "B", v)
 }
+
+func TestInsertContactIfAbsent(t *testing.T) {
+	s := openTemp(t)
+	id := newPeer(t)
+	addr := ma.StringCast("/ip4/1.2.3.4/tcp/4001")
+	ok, err := s.InsertContactIfAbsent(ctx, Contact{PeerID: id, DisplayName: "Ann", State: StatePendingIncoming, PendingSend: true, Addrs: []ma.Multiaddr{addr}})
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, s.SetNickname(ctx, id, "Annie"))
+
+	ok, err = s.InsertContactIfAbsent(ctx, Contact{PeerID: id, DisplayName: "Other", State: StateBlocked})
+	require.NoError(t, err)
+	require.False(t, ok)
+	c, err := s.GetContact(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "Ann", c.DisplayName)
+	require.Equal(t, "Annie", c.Nickname)
+	require.Equal(t, StatePendingIncoming, c.State)
+	require.True(t, c.PendingSend)
+	require.Len(t, c.Addrs, 1)
+	require.False(t, c.CreatedAt.IsZero())
+}
+
+func TestUpdateContactTouchesOnlyGivenColumns(t *testing.T) {
+	s := openTemp(t)
+	id := newPeer(t)
+	addr := ma.StringCast("/ip4/1.2.3.4/tcp/4001")
+	created := time.UnixMilli(time.Now().Add(-time.Hour).UnixMilli())
+	require.NoError(t, s.UpsertContact(ctx, Contact{PeerID: id, DisplayName: "Ann", Nickname: "Annie", State: StatePendingOutgoing, PendingSend: true, Addrs: []ma.Multiaddr{addr}, CreatedAt: created}))
+
+	st, ps := StateAccepted, false
+	require.NoError(t, s.UpdateContact(ctx, id, ContactUpdate{State: &st, PendingSend: &ps}))
+	c, err := s.GetContact(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, StateAccepted, c.State)
+	require.False(t, c.PendingSend)
+	require.Equal(t, "Ann", c.DisplayName)
+	require.Equal(t, "Annie", c.Nickname)
+	require.Equal(t, []ma.Multiaddr{addr}, c.Addrs)
+	require.True(t, created.Equal(c.CreatedAt))
+
+	name := "Ann B"
+	addr2 := ma.StringCast("/ip4/5.6.7.8/udp/1/quic-v1")
+	require.NoError(t, s.UpdateContact(ctx, id, ContactUpdate{DisplayName: &name, Addrs: []ma.Multiaddr{addr2}}))
+	c, err = s.GetContact(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, "Ann B", c.DisplayName)
+	require.Equal(t, []ma.Multiaddr{addr2}, c.Addrs)
+	require.Equal(t, StateAccepted, c.State)
+	require.False(t, c.PendingSend)
+	require.Equal(t, "Annie", c.Nickname)
+
+	// An empty update is a no-op.
+	require.NoError(t, s.UpdateContact(ctx, id, ContactUpdate{}))
+}
+
+func TestUpdateContactNotFound(t *testing.T) {
+	s := openTemp(t)
+	st := StateBlocked
+	require.ErrorIs(t, s.UpdateContact(ctx, newPeer(t), ContactUpdate{State: &st}), ErrNotFound)
+}

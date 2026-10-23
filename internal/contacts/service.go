@@ -60,6 +60,10 @@ var (
 	ErrNotPending = errors.New("contacts: no pending request from this peer")
 	// errNoAck is returned by Flush when the peer replied with something other than an ack.
 	errNoAck = errors.New("contacts: peer did not acknowledge")
+	// errUnexpectedFrame is an inbound frame that is neither Request nor Accept.
+	errUnexpectedFrame = errors.New("contacts: unexpected frame")
+	// errConcurrentInsert means a row appeared between our read and insert.
+	errConcurrentInsert = errors.New("contacts: contact was created concurrently")
 )
 
 // Service runs the contact protocol for one host.
@@ -72,6 +76,8 @@ type Service struct {
 
 	// readTimeout bounds each exchange; tests shorten it.
 	readTimeout time.Duration
+	// beforeWrite, if set, runs between reading and writing a contact (tests).
+	beforeWrite func(peer.ID)
 
 	ctx    context.Context // service lifetime; cancelled by Close
 	cancel context.CancelFunc
@@ -159,6 +165,61 @@ func (s *Service) getContact(ctx context.Context, id peer.ID) (c store.Contact, 
 	return c, true, nil
 }
 
+// mutate applies one transition to id's contact under stateMu. decide sees the
+// current row (found=false: there is none yet) and returns only the columns to
+// change; an empty update writes nothing. Existing rows get a column-targeted
+// update, so edits made outside the service (nickname, addrs) are never
+// overwritten. It reports whether anything was written.
+func (s *Service) mutate(ctx context.Context, id peer.ID,
+	decide func(c store.Contact, found bool) (store.ContactUpdate, error)) (bool, error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	c, found, err := s.getContact(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	u, err := decide(c, found)
+	if err != nil || u.IsZero() {
+		return false, err
+	}
+	if s.beforeWrite != nil {
+		s.beforeWrite(id)
+	}
+	if found {
+		if err := s.st.UpdateContact(ctx, id, u); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	inserted, err := s.st.InsertContactIfAbsent(ctx, applyUpdate(store.Contact{PeerID: id}, u))
+	if err != nil {
+		return false, err
+	}
+	if !inserted {
+		return false, errConcurrentInsert
+	}
+	return true, nil
+}
+
+// applyUpdate returns c with u's fields applied.
+func applyUpdate(c store.Contact, u store.ContactUpdate) store.Contact {
+	if u.State != nil {
+		c.State = *u.State
+	}
+	if u.PendingSend != nil {
+		c.PendingSend = *u.PendingSend
+	}
+	if u.DisplayName != nil {
+		c.DisplayName = *u.DisplayName
+	}
+	if u.Addrs != nil {
+		c.Addrs = u.Addrs
+	}
+	return c
+}
+
+func ptr[T any](v T) *T { return &v }
+
 // Add adds the peer on card as a contact (see the package state table).
 func (s *Service) Add(ctx context.Context, card identity.Card) error {
 	if err := card.PeerID.Validate(); err != nil {
@@ -172,36 +233,32 @@ func (s *Service) Add(ctx context.Context, card identity.Card) error {
 		s.h.Peerstore().AddAddrs(id, card.Addrs, peerstore.AddressTTL)
 	}
 
-	s.stateMu.Lock()
-	c, found, err := s.getContact(ctx, id)
-	if err != nil {
-		s.stateMu.Unlock()
-		return err
-	}
-	if len(card.Addrs) > 0 {
-		c.Addrs = card.Addrs
-	}
 	flush := false
-	switch {
-	case !found || c.State == store.StateBlocked:
-		c.State = store.StatePendingOutgoing
-		c.PendingSend = true
-		if name := sanitizeName(card.DisplayName); name != "" {
-			c.DisplayName = name
+	changed, err := s.mutate(ctx, id, func(c store.Contact, found bool) (store.ContactUpdate, error) {
+		var u store.ContactUpdate
+		if len(card.Addrs) > 0 {
+			u.Addrs = card.Addrs
 		}
-		flush = true
-	case c.State == store.StatePendingIncoming:
-		c.State = store.StateAccepted
-		c.PendingSend = true
-		flush = true
-	default: // pending_outgoing or accepted: refresh addrs only
-	}
-	err = s.st.UpsertContact(ctx, c)
-	s.stateMu.Unlock()
+		switch {
+		case !found || c.State == store.StateBlocked:
+			u.State, u.PendingSend = ptr(store.StatePendingOutgoing), ptr(true)
+			if name := sanitizeName(card.DisplayName); name != "" {
+				u.DisplayName = &name
+			}
+			flush = true
+		case c.State == store.StatePendingIncoming: // same as Accept
+			u.State, u.PendingSend = ptr(store.StateAccepted), ptr(true)
+			flush = true
+		default: // pending_outgoing or accepted: refresh addrs only
+		}
+		return u, nil
+	})
 	if err != nil {
 		return err
 	}
-	s.changed(id)
+	if changed {
+		s.changed(id)
+	}
 	if flush {
 		s.flushAsync(id)
 	}
@@ -210,17 +267,12 @@ func (s *Service) Add(ctx context.Context, card identity.Card) error {
 
 // Accept accepts a pending incoming request; ErrNotPending otherwise.
 func (s *Service) Accept(ctx context.Context, id peer.ID) error {
-	s.stateMu.Lock()
-	c, found, err := s.getContact(ctx, id)
-	if err == nil && (!found || c.State != store.StatePendingIncoming) {
-		err = ErrNotPending
-	}
-	if err == nil {
-		c.State = store.StateAccepted
-		c.PendingSend = true
-		err = s.st.UpsertContact(ctx, c)
-	}
-	s.stateMu.Unlock()
+	_, err := s.mutate(ctx, id, func(c store.Contact, found bool) (store.ContactUpdate, error) {
+		if !found || c.State != store.StatePendingIncoming {
+			return store.ContactUpdate{}, ErrNotPending
+		}
+		return store.ContactUpdate{State: ptr(store.StateAccepted), PendingSend: ptr(true)}, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -231,14 +283,9 @@ func (s *Service) Accept(ctx context.Context, id peer.ID) error {
 
 // Reject blocks the peer. Nothing is sent: the requester is never told.
 func (s *Service) Reject(ctx context.Context, id peer.ID) error {
-	s.stateMu.Lock()
-	c, _, err := s.getContact(ctx, id)
-	if err == nil {
-		c.State = store.StateBlocked
-		c.PendingSend = false
-		err = s.st.UpsertContact(ctx, c)
-	}
-	s.stateMu.Unlock()
+	_, err := s.mutate(ctx, id, func(store.Contact, bool) (store.ContactUpdate, error) {
+		return store.ContactUpdate{State: ptr(store.StateBlocked), PendingSend: ptr(false)}, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -274,15 +321,12 @@ func (s *Service) Flush(ctx context.Context, id peer.ID) error {
 
 	// Clear PendingSend only if we still owe the same frame: the state may
 	// have moved on (e.g. a mutual add) while we were sending.
-	s.stateMu.Lock()
-	cur, found, err := s.getContact(ctx, id)
-	cleared := false
-	if err == nil && found && cur.PendingSend && cur.State == c.State {
-		cur.PendingSend = false
-		err = s.st.UpsertContact(ctx, cur)
-		cleared = err == nil
-	}
-	s.stateMu.Unlock()
+	cleared, err := s.mutate(ctx, id, func(cur store.Contact, found bool) (store.ContactUpdate, error) {
+		if !found || !cur.PendingSend || cur.State != c.State {
+			return store.ContactUpdate{}, nil
+		}
+		return store.ContactUpdate{PendingSend: ptr(false)}, nil
+	})
 	if cleared {
 		s.changed(id)
 	}
@@ -359,9 +403,11 @@ func (s *Service) pruneLimiters() {
 	}
 }
 
-// handleStream answers one inbound frame. Request and Accept frames are
-// always acked once read, even when dropped, so a rejected or rate-limited
-// peer learns nothing.
+// handleStream answers one inbound frame. Request and Accept frames are acked
+// once stored, and also when deliberately dropped (blocked, rate-limited,
+// over the pending cap), so a rejected peer learns nothing. If the frame
+// could not be stored the stream is reset instead: the sender keeps
+// PendingSend and retries, and a reset looks like any transport failure.
 func (s *Service) handleStream(str network.Stream) {
 	if !s.track() {
 		str.Reset()
@@ -383,14 +429,18 @@ func (s *Service) handleStream(str network.Stream) {
 		str.Reset()
 		return
 	}
+	var err error
 	switch body := f.Body.(type) {
 	case *pb.ContactFrame_Request:
 		if s.allowRequest(remote) {
-			s.onRequest(ctx, remote, sanitizeName(body.Request.GetDisplayName()))
+			err = s.onRequest(ctx, remote, sanitizeName(body.Request.GetDisplayName()))
 		}
 	case *pb.ContactFrame_Accept:
-		s.onAccept(ctx, remote, sanitizeName(body.Accept.GetDisplayName()))
+		err = s.onAccept(ctx, remote, sanitizeName(body.Accept.GetDisplayName()))
 	default:
+		err = errUnexpectedFrame
+	}
+	if err != nil {
 		str.Reset()
 		return
 	}
@@ -402,69 +452,71 @@ func (s *Service) handleStream(str network.Stream) {
 	str.Close()
 }
 
-// onRequest applies a received ContactRequest. Store errors are dropped: the
-// peer still gets its ack, as with any other dropped request.
-func (s *Service) onRequest(ctx context.Context, id peer.ID, name string) {
-	s.stateMu.Lock()
-	c, found, err := s.getContact(ctx, id)
-	if err != nil {
-		s.stateMu.Unlock()
-		return
-	}
+// onRequest applies a received ContactRequest. It returns an error only when
+// the request could not be stored; deliberate drops (blocked, over the
+// pending cap) return nil.
+func (s *Service) onRequest(ctx context.Context, id peer.ID, name string) error {
 	flush := false
-	switch {
-	case !found:
-		n, err := s.st.CountContactsInState(ctx, store.StatePendingIncoming)
-		if err != nil || n >= maxPendingIncoming {
-			s.stateMu.Unlock()
-			return
+	changed, err := s.mutate(ctx, id, func(c store.Contact, found bool) (store.ContactUpdate, error) {
+		var u store.ContactUpdate
+		if name != "" && name != c.DisplayName {
+			u.DisplayName = &name
 		}
-		c.State = store.StatePendingIncoming
-	case c.State == store.StatePendingOutgoing: // mutual add
-		c.State = store.StateAccepted
-		c.PendingSend = true
-		flush = true
-	case c.State == store.StateAccepted: // they lost state; resend Accept
-		c.PendingSend = true
-		flush = true
-	case c.State == store.StatePendingIncoming && name != "" && c.DisplayName != name:
-	default: // blocked, or pending_incoming with an unchanged name
-		s.stateMu.Unlock()
-		return
-	}
-	if name != "" {
-		c.DisplayName = name
-	}
-	err = s.st.UpsertContact(ctx, c)
-	s.stateMu.Unlock()
+		switch {
+		case !found:
+			n, err := s.st.CountContactsInState(ctx, store.StatePendingIncoming)
+			if err != nil {
+				return store.ContactUpdate{}, err
+			}
+			if n >= maxPendingIncoming {
+				return store.ContactUpdate{}, nil
+			}
+			u.State = ptr(store.StatePendingIncoming)
+		case c.State == store.StatePendingOutgoing: // mutual add
+			u.State, u.PendingSend = ptr(store.StateAccepted), ptr(true)
+			flush = true
+		case c.State == store.StateAccepted: // they lost state; resend Accept
+			u.PendingSend = ptr(true)
+			flush = true
+		case c.State == store.StateBlocked:
+			return store.ContactUpdate{}, nil
+		default: // pending_incoming: update the name only
+		}
+		return u, nil
+	})
 	if err != nil {
-		return
+		return err
 	}
-	s.changed(id)
+	if changed {
+		s.changed(id)
+	}
 	if flush {
 		s.flushAsync(id)
 	}
+	return nil
 }
 
 // onAccept applies a received ContactAccept: only a pending outgoing request
-// can be accepted.
-func (s *Service) onAccept(ctx context.Context, id peer.ID, name string) {
-	s.stateMu.Lock()
-	c, found, err := s.getContact(ctx, id)
-	if err != nil || !found || c.State != store.StatePendingOutgoing {
-		s.stateMu.Unlock()
-		return
+// can be accepted. It returns an error only when the accept could not be stored.
+func (s *Service) onAccept(ctx context.Context, id peer.ID, name string) error {
+	changed, err := s.mutate(ctx, id, func(c store.Contact, found bool) (store.ContactUpdate, error) {
+		if !found || c.State != store.StatePendingOutgoing {
+			return store.ContactUpdate{}, nil
+		}
+		// Our Request is answered; nothing more is owed.
+		u := store.ContactUpdate{State: ptr(store.StateAccepted), PendingSend: ptr(false)}
+		if name != "" {
+			u.DisplayName = &name
+		}
+		return u, nil
+	})
+	if err != nil {
+		return err
 	}
-	c.State = store.StateAccepted
-	c.PendingSend = false // our Request is answered; nothing more is owed
-	if name != "" {
-		c.DisplayName = name
-	}
-	err = s.st.UpsertContact(ctx, c)
-	s.stateMu.Unlock()
-	if err == nil {
+	if changed {
 		s.changed(id)
 	}
+	return nil
 }
 
 // sanitizeName strips control characters and invalid UTF-8 from a peer's

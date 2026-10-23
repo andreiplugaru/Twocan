@@ -332,3 +332,63 @@ func TestSilentPeerTimesOut(t *testing.T) {
 	require.Error(t, err)
 	require.Less(t, time.Since(start), waitFor/2, "A held the silent stream open")
 }
+
+// A responder that cannot store a frame must not ack it, so the sender keeps
+// PendingSend and retries later.
+func TestResponderStoreFailureIsNotAcked(t *testing.T) {
+	t.Run("request", func(t *testing.T) {
+		_, a, b := pair(t)
+		require.NoError(t, b.st.Close())
+		require.NoError(t, a.svc.Add(t.Context(), b.card("Bob")))
+		require.Error(t, a.svc.Flush(t.Context(), b.id()))
+		c, _ := a.contact(t, b.id())
+		require.Equal(t, store.StatePendingOutgoing, c.State)
+		require.True(t, c.PendingSend)
+	})
+	t.Run("accept", func(t *testing.T) {
+		_, a, b := pair(t)
+		require.NoError(t, a.svc.Add(t.Context(), b.card("Bob")))
+		b.waitContact(t, a.id(), isState(store.StatePendingIncoming))
+		a.waitContact(t, b.id(), settled(store.StatePendingOutgoing))
+		require.NoError(t, a.st.Close())
+		require.NoError(t, b.svc.Accept(t.Context(), a.id()))
+		require.Error(t, b.svc.Flush(t.Context(), a.id()))
+		c, _ := b.contact(t, a.id())
+		require.Equal(t, store.StateAccepted, c.State)
+		require.True(t, c.PendingSend)
+	})
+}
+
+// A nickname set while the service is between reading and writing a contact
+// must survive the service's write.
+func TestConcurrentNicknameEditSurvives(t *testing.T) {
+	mn, a, b := pair(t)
+	require.NoError(t, a.svc.Add(t.Context(), b.card("Bob")))
+	b.waitContact(t, a.id(), isState(store.StatePendingIncoming))
+	a.waitContact(t, b.id(), settled(store.StatePendingOutgoing))
+
+	var nick string
+	b.svc.beforeWrite = func(id peer.ID) {
+		if id != a.id() || nick == "" {
+			return
+		}
+		if err := b.st.SetNickname(context.Background(), id, nick); err != nil {
+			t.Errorf("SetNickname: %v", err)
+		}
+	}
+
+	// Inbound path: a renamed Request updates display_name only.
+	nick = "Ally"
+	reply := sendRaw(t, mn, a.h, b.id(), requestFrame("Alice 2"))
+	require.NotNil(t, reply.GetAck())
+	c, _ := b.contact(t, a.id())
+	require.Equal(t, "Alice 2", c.DisplayName)
+	require.Equal(t, "Ally", c.Nickname)
+
+	// Local path: Accept changes state and pending_send only.
+	nick = "Al"
+	require.NoError(t, b.svc.Accept(t.Context(), a.id()))
+	c, _ = b.contact(t, a.id())
+	require.Equal(t, store.StateAccepted, c.State)
+	require.Equal(t, "Al", c.Nickname)
+}
