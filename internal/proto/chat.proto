@@ -1,0 +1,20 @@
+syntax = "proto3";
+package twocan;
+option go_package = "twocan/internal/proto;pb";
+
+message ChatFrame {
+  oneof body {
+    ChatMessage message = 1;
+    Ack ack = 2;
+  }
+}
+
+message ChatMessage {
+  bytes id = 1;
+  int64 sent_at = 2; // unix ms
+  string text = 3;
+}
+
+message Ack {
+  bytes id = 1;
+}
