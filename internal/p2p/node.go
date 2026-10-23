@@ -99,14 +99,14 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		}),
 	}
 	if len(cfg.ListenAddrs) == 0 {
-		opts = append(opts, libp2p.NoListenAddrs)
+		// NoListenAddrs also disables the relay transport; re-enable it (must
+		// come after) so a non-listening node can still be reached via a relay.
+		opts = append(opts, libp2p.NoListenAddrs, libp2p.EnableRelay())
 	} else {
 		opts = append(opts, libp2p.ListenAddrStrings(cfg.ListenAddrs...))
-		// Only listening nodes get autorelay: it needs the relay transport,
-		// which NoListenAddrs disables (libp2p.New would fail).
-		if len(cfg.Bootstrap) > 0 {
-			opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(cfg.Bootstrap))
-		}
+	}
+	if len(cfg.Bootstrap) > 0 {
+		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(cfg.Bootstrap))
 	}
 	if cfg.ForcePrivate {
 		opts = append(opts, libp2p.ForceReachabilityPrivate())

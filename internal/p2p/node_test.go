@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -85,23 +86,51 @@ func TestNewNodeDoesNotBlockOnDeadBootstrap(t *testing.T) {
 	require.Less(t, time.Since(start), 2*time.Second)
 }
 
-func TestNewNodeNoListenAddrs(t *testing.T) {
-	n := newTestNodeCfg(t, Config{PrivKey: newTestKey(t)})
-	require.Empty(t, n.Host().Network().ListenAddresses())
+// requireNoDirectListeners asserts n listens on nothing but the relay
+// transport's implicit /p2p-circuit address (no TCP/QUIC).
+func requireNoDirectListeners(t *testing.T, n *Node) {
+	t.Helper()
+	for _, a := range n.Host().Network().ListenAddresses() {
+		require.Equal(t, "/p2p-circuit", a.String())
+	}
 }
 
+func TestNewNodeNoListenAddrs(t *testing.T) {
+	n := newTestNodeCfg(t, Config{PrivKey: newTestKey(t)})
+	requireNoDirectListeners(t, n)
+}
+
+// A node with no listen addrs and a bootstrap relay must still run autorelay:
+// it gets a reservation and advertises a /p2p-circuit address.
 func TestNewNodeNoListenAddrsWithBootstrap(t *testing.T) {
-	boot := newTestNode(t)
+	// Autorelay builds circuit addrs only from a relay's public addrs, so the
+	// loopback relay also advertises a never-dialled public one.
+	fakePublic := ma.StringCast("/ip4/1.2.3.4/tcp/4001")
+	relay, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.EnableRelayService(),
+		libp2p.ForceReachabilityPublic(),
+		libp2p.AddrsFactory(func(addrs []ma.Multiaddr) []ma.Multiaddr {
+			return append(addrs, fakePublic)
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, relay.Close()) })
+
 	n := newTestNodeCfg(t, Config{
-		PrivKey:   newTestKey(t),
-		Bootstrap: []peer.AddrInfo{{ID: boot.Host().ID(), Addrs: boot.Host().Addrs()}},
+		PrivKey:      newTestKey(t),
+		Bootstrap:    []peer.AddrInfo{{ID: relay.ID(), Addrs: relay.Addrs()}},
+		ForcePrivate: true,
 	})
-	require.Empty(t, n.Host().Network().ListenAddresses())
-	// The background bootstrap dials the bootstrap peer.
+	requireNoDirectListeners(t, n)
 	require.Eventually(t, func() bool {
-		c, _ := n.ConnInfo(boot.Host().ID())
-		return c
-	}, 5*time.Second, 20*time.Millisecond)
+		for _, a := range n.Host().Addrs() {
+			if _, err := a.ValueForProtocol(ma.P_CIRCUIT); err == nil {
+				return true
+			}
+		}
+		return false
+	}, 15*time.Second, 50*time.Millisecond, "no relay reservation")
 }
 
 func TestMDNSNotifeeAddsAddrsWithoutDialing(t *testing.T) {
