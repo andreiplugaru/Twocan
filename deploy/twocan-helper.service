@@ -1,0 +1,16 @@
+[Unit]
+Description=Twocan helper (bootstrap, relay, AutoNAT)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/twocan-helper --key /var/lib/twocan-helper/helper.key
+DynamicUser=yes
+StateDirectory=twocan-helper
+Restart=always
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
