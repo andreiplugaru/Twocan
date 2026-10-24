@@ -1,0 +1,21 @@
+syntax = "proto3";
+package twocan;
+option go_package = "twocan/internal/proto;pb";
+
+message ContactFrame {
+  oneof body {
+    ContactRequest request = 1;
+    ContactAccept accept = 2;
+    ContactAck ack = 3;
+  }
+}
+
+message ContactRequest {
+  string display_name = 1;
+}
+
+message ContactAccept {
+  string display_name = 1;
+}
+
+message ContactAck {}

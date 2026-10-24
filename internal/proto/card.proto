@@ -1,0 +1,10 @@
+syntax = "proto3";
+package twocan;
+option go_package = "twocan/internal/proto;pb";
+
+message Card {
+  uint32 version = 1;
+  bytes peer_id = 2;
+  string display_name = 3;
+  repeated bytes addrs = 4;
+}
