@@ -20,7 +20,7 @@ Grab the binaries from the [latest release](https://github.com/andreiplugaru/Two
 
 | File | For |
 | --- | --- |
-| `twocan-linux-amd64` | Desktop app (x86-64). Needs the usual desktop OpenGL/X11 libraries, which are already installed on any Linux desktop |
+| `twocan-linux-amd64` | Desktop app (x86-64). Needs the usual desktop OpenGL, X11, Wayland and xkbcommon libraries, which are already installed on any Linux desktop |
 | `twocan-cli-linux-amd64`, `twocan-cli-linux-arm64` | Terminal client (static, no dependencies) |
 | `twocan-helper-linux-amd64`, `twocan-helper-linux-arm64` | Helper server (static), plus `twocan-helper.service` |
 | `SHA256SUMS` | Checksums: `sha256sum -c SHA256SUMS --ignore-missing` |
@@ -34,13 +34,13 @@ If the release was built with a helper address (see [Releases](#releases)), the 
 
 ## Build
 
-To build from source instead, you need Go 1.27+ and, for the desktop app, a C compiler and the OpenGL/X11 development libraries that [Fyne](https://fyne.io) uses.
+To build from source instead, you need Go 1.27+ and, for the desktop app, a C compiler and the OpenGL, X11 and Wayland development libraries that [Fyne](https://fyne.io) uses.
 
 ```bash
 # Manjaro / Arch
-sudo pacman -S go gcc libxcursor libxrandr libxinerama libxi libxxf86vm mesa
+sudo pacman -S go gcc libxcursor libxrandr libxinerama libxi libxxf86vm mesa wayland libxkbcommon
 # Debian / Ubuntu
-sudo apt install golang gcc libgl1-mesa-dev xorg-dev
+sudo apt install golang gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
 
 go build -o bin/twocan ./cmd/twocan
 go build -o bin/twocan-cli ./cmd/twocan-cli
