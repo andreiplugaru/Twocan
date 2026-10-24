@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"twocan/internal/contacts"
 	"twocan/internal/event"
 	"twocan/internal/identity"
+	"twocan/internal/logging"
 	"twocan/internal/p2p"
 	"twocan/internal/store"
 	"twocan/internal/svc"
@@ -56,6 +58,8 @@ type Options struct {
 	ListenAddrs  []string // nil: p2p.DefaultListenAddrs
 	EnableMDNS   bool
 	ForcePrivate bool
+	// Log receives the node's events (nil: discard). Never message text or keys.
+	Log *slog.Logger
 }
 
 // DefaultDataDir returns os.UserConfigDir()/twocan.
@@ -102,6 +106,7 @@ type Node struct {
 	st       *store.Store
 	r        p2p.Reacher
 	connInfo func(peer.ID) (connected, relayed bool)
+	log      *slog.Logger
 	bus      *event.Bus
 	contacts *contacts.Service
 	chat     *chat.Service
@@ -160,13 +165,14 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		Bootstrap:    boot,
 		EnableMDNS:   opts.EnableMDNS,
 		ForcePrivate: opts.ForcePrivate,
+		Log:          opts.Log,
 	})
 	if err != nil {
 		cancel()
 		st.Close()
 		return nil, err
 	}
-	n, err := startWith(ctx, pn.Host(), st, pn, pn.ConnInfo, intervals{})
+	n, err := startWith(ctx, pn.Host(), st, pn, pn.ConnInfo, intervals{}, opts.Log)
 	if err != nil {
 		pn.Close()
 		cancel()
@@ -180,10 +186,13 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 // startWith wires a node around an existing host, store and reacher (tests
 // pass mocknet hosts) and starts the services and loops. It seeds the
 // peerstore with each contact's stored addrs and protects contact
-// connections. Zero intervals take their defaults. On success the Node owns
-// st (Stop closes it); h stays the caller's.
+// connections. Zero intervals take their defaults; a nil log discards. On
+// success the Node owns st (Stop closes it); h stays the caller's.
 func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
-	connInfo func(peer.ID) (bool, bool), iv intervals) (*Node, error) {
+	connInfo func(peer.ID) (bool, bool), iv intervals, log *slog.Logger) (*Node, error) {
+	if log == nil {
+		log = logging.Discard()
+	}
 	if iv.tick == 0 {
 		iv.tick = defaultTick
 	}
@@ -194,7 +203,11 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	if err != nil {
 		return nil, fmt.Errorf("core: list contacts: %w", err)
 	}
+	nodeLog := log.With("component", "core")
+	nodeLog.Info("starting", "peer", h.ID(), "contacts", len(cs))
 	for _, c := range cs {
+		nodeLog.Info("contact at startup", "peer", c.PeerID, "name", c.Name(), "state", c.State,
+			"owes_contact_frame", c.PendingSend, "saved_addrs", addrStrings(c.Addrs))
 		if c.State == store.StateBlocked {
 			continue
 		}
@@ -216,6 +229,7 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 		st:       st,
 		r:        r,
 		connInfo: connInfo,
+		log:      nodeLog,
 		bus:      event.NewBus(),
 		iv:       iv,
 		loops:    svc.NewTracker(),
@@ -224,6 +238,8 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	n.reach.Store(int32(network.ReachabilityUnknown))
 	n.contacts = contacts.New(h, st, r, n.bus, n.DisplayName)
 	n.chat = chat.New(h, st, r, n.bus)
+	n.contacts.SetLogger(log)
+	n.chat.SetLogger(log)
 	// Subscribe before the services start so no ContactChanged is missed.
 	busEvents, cancelBus := n.bus.Subscribe()
 	n.contacts.Start()
@@ -250,6 +266,7 @@ func (n *Node) Stop() error {
 		}
 		errs = append(errs, n.st.Close())
 		n.stopErr = errors.Join(errs...)
+		n.log.Info("stopped", "err", n.stopErr)
 	})
 	return n.stopErr
 }

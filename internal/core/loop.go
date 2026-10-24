@@ -98,10 +98,18 @@ func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 		return // not a contact (or the store failed): nothing to do
 	}
 	connected, relayed := n.connInfo(id)
-	n.bus.Publish(event.Connectivity{Peer: id, Connected: connected, Relayed: relayed})
+	// Log before publishing, so the log line precedes anything the event triggers.
 	if !connected {
+		n.log.Info("contact disconnected", "peer", id)
+		n.bus.Publish(event.Connectivity{Peer: id})
 		return
 	}
+	var remotes []ma.Multiaddr
+	for _, conn := range n.h.Network().ConnsToPeer(id) {
+		remotes = append(remotes, conn.RemoteMultiaddr())
+	}
+	n.log.Info("contact connected", "peer", id, "relayed", relayed, "remote", addrStrings(remotes))
+	n.bus.Publish(event.Connectivity{Peer: id, Connected: true, Relayed: relayed})
 	if c.State != store.StateBlocked {
 		n.h.ConnManager().Protect(id, protectTag)
 	}
@@ -122,7 +130,12 @@ func (n *Node) saveAddrs(ctx context.Context, id peer.ID) {
 		}
 	}
 	if len(addrs) > 0 {
-		_ = n.st.SetAddrs(ctx, id, addrs) // best effort; the next connect retries
+		// Best effort; the next connect retries.
+		if err := n.st.SetAddrs(ctx, id, addrs); err != nil {
+			n.log.Warn("could not save contact addresses", "peer", id, "err", err)
+			return
+		}
+		n.log.Debug("saved contact addresses", "peer", id, "addrs", addrStrings(addrs))
 	}
 }
 
@@ -187,8 +200,10 @@ func (n *Node) flushPeer(ctx context.Context, id peer.ID, gen uint64) {
 	case err != nil:
 		ps.delay = nextBackoff(ps.delay)
 		ps.due = time.Now().Add(ps.delay)
+		n.log.Info("send failed; will retry", "peer", id, "retry_in", ps.delay, "err", err)
 	case notContact:
 		ps.parked = true
+		n.log.Info("queued messages held: peer is not an accepted contact", "peer", id)
 	default:
 		delete(n.peers, id)
 	}
@@ -235,6 +250,7 @@ func (n *Node) sweepPresence(ctx context.Context) {
 		if connected, _ := n.connInfo(c.PeerID); connected {
 			continue
 		}
+		n.log.Debug("checking on offline contact", "peer", c.PeerID)
 		id := c.PeerID
 		n.loops.Go(func(ctx context.Context) {
 			ctx, cancel := context.WithTimeout(ctx, n.iv.presence)
@@ -242,4 +258,13 @@ func (n *Node) sweepPresence(ctx context.Context) {
 			_ = n.r.Reach(ctx, id)
 		})
 	}
+}
+
+// addrStrings renders multiaddrs for logging.
+func addrStrings(addrs []ma.Multiaddr) []string {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = a.String()
+	}
+	return out
 }

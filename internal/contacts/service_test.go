@@ -20,6 +20,7 @@ import (
 
 	"twocan/internal/event"
 	"twocan/internal/identity"
+	"twocan/internal/logtest"
 	pb "twocan/internal/proto"
 	"twocan/internal/store"
 	"twocan/internal/wire"
@@ -166,6 +167,24 @@ func TestAddAcceptHappyPath(t *testing.T) {
 	b.waitContact(t, a.id(), settled(store.StateAccepted))
 	ca, _ := a.contact(t, b.id())
 	require.Equal(t, "Bob", ca.DisplayName)
+}
+
+func TestLogsContactFlow(t *testing.T) {
+	_, a, b := pair(t)
+	alog, alogs := logtest.New()
+	blog, blogs := logtest.New()
+	a.svc.SetLogger(alog)
+	b.svc.SetLogger(blog)
+
+	require.NoError(t, a.svc.Add(t.Context(), b.card("Bob")))
+	a.waitContact(t, b.id(), settled(store.StatePendingOutgoing))
+	require.Contains(t, alogs.String(), `msg="contact added from card" component=contacts peer=`+b.id().String()+` outcome="request queued"`)
+	require.Contains(t, alogs.String(), `msg="contact frame acknowledged" component=contacts peer=`+b.id().String()+` frame=request`)
+	require.Contains(t, blogs.String(), `msg="contact request received" component=contacts peer=`+a.id().String()+` outcome="new request"`)
+
+	require.NoError(t, b.svc.Reject(t.Context(), a.id()))
+	require.NoError(t, a.svc.Flush(t.Context(), b.id())) // nothing owed: no exchange
+	require.Contains(t, blogs.String(), `msg="contact blocked" component=contacts peer=`+a.id().String())
 }
 
 func TestAddKeepsNickname(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,8 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	ma "github.com/multiformats/go-multiaddr"
+
+	"twocan/internal/logging"
 )
 
 const (
@@ -59,6 +62,8 @@ type Config struct {
 	// ForcePrivate makes the node believe it is behind a NAT (tests use it to
 	// force relaying).
 	ForcePrivate bool
+	// Log receives connection, discovery and reachability events (nil: discard).
+	Log *slog.Logger
 }
 
 // Node is a running libp2p host plus its DHT and discovery services.
@@ -67,6 +72,7 @@ type Node struct {
 	dht   *dht.IpfsDHT
 	mdns  mdns.Service
 	reach atomic.Int32 // network.Reachability
+	log   *slog.Logger
 
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -84,7 +90,11 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("conn manager: %w", err)
 	}
-	n := &Node{}
+	log := cfg.Log
+	if log == nil {
+		log = logging.Discard()
+	}
+	n := &Node{log: log.With("component", "p2p")}
 	n.reach.Store(int32(network.ReachabilityUnknown))
 
 	opts := []libp2p.Option{
@@ -120,8 +130,13 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("libp2p host: %w", err)
 	}
 	n.host = h
+	n.log.Info("node started", "peer", h.ID(), "listen", addrStrings(h.Addrs()),
+		"bootstrap", bootstrapStrings(cfg.Bootstrap), "mdns", cfg.EnableMDNS, "force_private", cfg.ForcePrivate)
 
-	sub, err := h.EventBus().Subscribe(new(event.EvtLocalReachabilityChanged))
+	sub, err := h.EventBus().Subscribe([]any{
+		new(event.EvtLocalReachabilityChanged),
+		new(event.EvtLocalAddressesUpdated),
+	})
 	if err != nil {
 		_ = n.dht.Close()
 		_ = h.Close()
@@ -129,7 +144,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 
 	if cfg.EnableMDNS {
-		n.mdns = mdns.NewMdnsService(h, MDNSService, mdnsNotifee{h})
+		n.mdns = mdns.NewMdnsService(h, MDNSService, mdnsNotifee{h: h, log: n.log})
 		if err := n.mdns.Start(); err != nil {
 			_ = sub.Close()
 			_ = n.dht.Close()
@@ -187,19 +202,29 @@ func (n *Node) Reach(ctx context.Context, id peer.ID) error {
 		return nil
 	}
 	ctx = network.WithAllowLimitedConn(ctx, "twocan")
+	start := time.Now()
 
+	// Dial errors from libp2p list every address tried and why it failed.
 	if addrs := n.host.Peerstore().Addrs(id); len(addrs) > 0 {
-		if err := n.connect(ctx, peer.AddrInfo{ID: id, Addrs: addrs}); err == nil {
+		err := n.connect(ctx, peer.AddrInfo{ID: id, Addrs: addrs})
+		if err == nil {
+			n.log.Info("reached peer", "peer", id, "via", "known addresses", "took", time.Since(start).Round(time.Millisecond))
 			return nil
 		}
+		n.log.Info("dial to known addresses failed", "peer", id, "addrs", addrStrings(addrs), "err", err)
+	} else {
+		n.log.Info("no known addresses for peer", "peer", id)
 	}
 
 	info, err := n.dht.FindPeer(ctx, id)
 	if err == nil {
+		n.log.Info("dht found peer", "peer", id, "addrs", addrStrings(info.Addrs))
 		if err = n.connect(ctx, info); err == nil {
+			n.log.Info("reached peer", "peer", id, "via", "dht", "took", time.Since(start).Round(time.Millisecond))
 			return nil
 		}
 	}
+	n.log.Warn("peer unreachable", "peer", id, "took", time.Since(start).Round(time.Millisecond), "err", err)
 	return fmt.Errorf("%w: %s: %w", ErrUnreachable, id, err)
 }
 
@@ -240,7 +265,13 @@ func (n *Node) trackReachability(ctx context.Context, sub event.Subscription) {
 			if !ok {
 				return
 			}
-			n.reach.Store(int32(e.(event.EvtLocalReachabilityChanged).Reachability))
+			switch e := e.(type) {
+			case event.EvtLocalReachabilityChanged:
+				n.reach.Store(int32(e.Reachability))
+				n.log.Info("reachability changed", "status", e.Reachability.String())
+			case event.EvtLocalAddressesUpdated:
+				n.log.Info("own addresses changed", "addrs", addrStrings(n.host.Addrs()))
+			}
 		}
 	}
 }
@@ -252,7 +283,12 @@ func (n *Node) bootstrap(ctx context.Context, peers []peer.AddrInfo) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = n.connect(ctx, p) // failures are retried by the DHT's refresh
+			// Failures are retried by the DHT's refresh.
+			if err := n.connect(ctx, p); err != nil {
+				n.log.Warn("bootstrap peer unreachable", "peer", p.ID, "addrs", addrStrings(p.Addrs), "err", err)
+			} else {
+				n.log.Info("bootstrap peer connected", "peer", p.ID)
+			}
 		}()
 	}
 	wg.Wait()
@@ -262,11 +298,33 @@ func (n *Node) bootstrap(ctx context.Context, peers []peer.AddrInfo) {
 }
 
 // mdnsNotifee records peers found on the local network; it does not dial.
-type mdnsNotifee struct{ h host.Host }
+type mdnsNotifee struct {
+	h   host.Host
+	log *slog.Logger
+}
 
 func (m mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	if pi.ID == m.h.ID() {
 		return
 	}
+	m.log.Info("mdns found peer", "peer", pi.ID, "addrs", addrStrings(pi.Addrs))
 	m.h.Peerstore().AddAddrs(pi.ID, pi.Addrs, peerstore.TempAddrTTL)
+}
+
+// addrStrings renders multiaddrs for logging.
+func addrStrings(addrs []ma.Multiaddr) []string {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = a.String()
+	}
+	return out
+}
+
+// bootstrapStrings renders bootstrap peers for logging.
+func bootstrapStrings(peers []peer.AddrInfo) []string {
+	out := make([]string, len(peers))
+	for i, p := range peers {
+		out[i] = p.String()
+	}
+	return out
 }

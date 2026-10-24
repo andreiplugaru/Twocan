@@ -11,6 +11,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/require"
+
+	"twocan/internal/logtest"
 )
 
 func newTestKey(t *testing.T) crypto.PrivKey {
@@ -26,6 +28,31 @@ func newTestNodeCfg(t *testing.T, cfg Config) *Node {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, n.Close()) })
 	return n
+}
+
+func TestReachLogsEachStep(t *testing.T) {
+	log, logs := logtest.New()
+	a := newTestNodeCfg(t, Config{
+		PrivKey:     newTestKey(t),
+		ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"},
+		Log:         log,
+	})
+	b := newTestNode(t)
+	require.Contains(t, logs.String(), `msg="node started" component=p2p peer=`+a.Host().ID().String())
+
+	// A peer whose only known address refuses connections.
+	ghost, err := peer.IDFromPrivateKey(newTestKey(t))
+	require.NoError(t, err)
+	a.Host().Peerstore().AddAddrs(ghost, []ma.Multiaddr{ma.StringCast("/ip4/127.0.0.1/tcp/1")}, time.Hour)
+	require.ErrorIs(t, a.Reach(t.Context(), ghost), ErrUnreachable)
+	out := logs.String()
+	require.Contains(t, out, `msg="dial to known addresses failed" component=p2p peer=`+ghost.String())
+	require.Contains(t, out, "/ip4/127.0.0.1/tcp/1")
+	require.Contains(t, out, `msg="peer unreachable" component=p2p peer=`+ghost.String())
+
+	a.Host().Peerstore().AddAddrs(b.Host().ID(), b.Host().Addrs(), time.Hour)
+	require.NoError(t, a.Reach(t.Context(), b.Host().ID()))
+	require.Contains(t, logs.String(), `msg="reached peer" component=p2p peer=`+b.Host().ID().String()+` via="known addresses"`)
 }
 
 func newTestNode(t *testing.T) *Node {
@@ -135,7 +162,10 @@ func TestNewNodeNoListenAddrsWithBootstrap(t *testing.T) {
 
 func TestMDNSNotifeeAddsAddrsWithoutDialing(t *testing.T) {
 	a, b := newTestNode(t), newTestNode(t)
-	mdnsNotifee{a.Host()}.HandlePeerFound(peer.AddrInfo{ID: b.Host().ID(), Addrs: b.Host().Addrs()})
+	log, logBuf := logtest.New()
+	mdnsNotifee{h: a.Host(), log: log}.
+		HandlePeerFound(peer.AddrInfo{ID: b.Host().ID(), Addrs: b.Host().Addrs()})
+	require.Contains(t, logBuf.String(), `msg="mdns found peer" peer=`+b.Host().ID().String())
 
 	require.ElementsMatch(t, b.Host().Addrs(), a.Host().Peerstore().Addrs(b.Host().ID()))
 	c, _ := a.ConnInfo(b.Host().ID())

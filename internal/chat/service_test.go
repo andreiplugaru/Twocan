@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"twocan/internal/event"
+	"twocan/internal/logtest"
 	pb "twocan/internal/proto"
 	"twocan/internal/store"
 	"twocan/internal/wire"
@@ -215,6 +216,44 @@ func TestSendDelivered(t *testing.T) {
 	require.Len(t, hb, 1)
 	require.Equal(t, "hi", hb[0].Text)
 	require.Equal(t, store.StatusReceived, hb[0].Status)
+}
+
+func TestLogsDeliveryWithoutMessageText(t *testing.T) {
+	_, a, b := pair(t)
+	alog, alogs := logtest.New()
+	blog, blogs := logtest.New()
+	a.svc.SetLogger(alog)
+	b.svc.SetLogger(blog)
+	aEvents, cancelA := a.bus.Subscribe()
+	defer cancelA()
+
+	const secret = "secret-text-7f3a"
+	m, err := a.svc.Send(t.Context(), b.id(), secret)
+	require.NoError(t, err)
+	waitEvent(t, aEvents, func(event.MessageDelivered) bool { return true })
+	require.Eventually(t, func() bool {
+		return strings.Contains(alogs.String(), `msg="messages delivered"`)
+	}, 5*time.Second, 10*time.Millisecond)
+
+	id := msgID(m.ID)
+	require.Contains(t, alogs.String(), `msg="message queued" component=chat peer=`+b.id().String()+` id=`+id)
+	require.Contains(t, alogs.String(), `msg="message delivered" component=chat peer=`+b.id().String()+` id=`+id)
+	require.Contains(t, blogs.String(), `msg="message received" component=chat peer=`+a.id().String()+` id=`+id)
+	require.NotContains(t, alogs.String(), secret)
+	require.NotContains(t, blogs.String(), secret)
+}
+
+func TestLogsWhyAnInboundFrameWasRejected(t *testing.T) {
+	mn, a, b := pair(t)
+	blog, blogs := logtest.New()
+	b.svc.SetLogger(blog)
+	s, r := rawStream(t, mn, a.h, b.id())
+	require.NoError(t, wire.WriteFrame(s, msgFrame(testID(1), 0, "hello")))
+	requireReset(t, r)
+	require.Eventually(t, func() bool {
+		return strings.Contains(blogs.String(), `msg="chat stream reset"`) &&
+			strings.Contains(blogs.String(), "missing send time")
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestSendValidation(t *testing.T) {
