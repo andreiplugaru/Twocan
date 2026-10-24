@@ -4,18 +4,15 @@ package ui
 
 import (
 	"context"
-	"errors"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"twocan/internal/core"
-	"twocan/internal/errtext"
 	"twocan/internal/event"
 	"twocan/internal/store"
 )
@@ -29,7 +26,7 @@ type MainView struct {
 	ctx context.Context
 
 	// Dialogs opened by the "My card" and "Add contact" buttons and, from
-	// Run, on first start. A nil func does nothing.
+	// Run, on first start (dialogs.go). A nil func does nothing.
 	showMyCard, showAddContact, showFirstRun func()
 
 	// Left pane (contacts.go).
@@ -57,6 +54,9 @@ type MainView struct {
 // Content in w.
 func NewMainView(api core.API, w fyne.Window) *MainView {
 	v := &MainView{api: api, win: w, ctx: context.Background(), reach: api.Reachability()}
+	v.showMyCard = func() { showMyCard(api, w) }
+	v.showAddContact = func() { showAddContact(api, w) }
+	v.showFirstRun = func() { showFirstRun(api, w, v.refreshName) }
 	v.buildContacts()
 	v.buildChat()
 	v.buildStatus()
@@ -120,9 +120,7 @@ func (v *MainView) apply(ev any) {
 }
 
 // showError shows err to the user in a dialog.
-func (v *MainView) showError(err error) {
-	dialog.ShowError(errors.New(errtext.FriendlyError(err)), v.win)
-}
+func (v *MainView) showError(err error) { errorDialog(v.win, err) }
 
 func call(f func()) {
 	if f != nil {

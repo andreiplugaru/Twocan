@@ -8,6 +8,7 @@ require (
 	github.com/libp2p/go-libp2p v0.51.0
 	github.com/libp2p/go-libp2p-kad-dht v0.42.2
 	github.com/multiformats/go-multiaddr v0.16.1
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/time v0.15.0
 	google.golang.org/protobuf v1.36.12

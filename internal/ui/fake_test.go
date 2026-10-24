@@ -23,12 +23,21 @@ type fakeAPI struct {
 	history  map[peer.ID][]store.Message
 	reach    network.Reachability
 	sendErr  error
+	addErr   error // returned by AddContact
 	nextID   uint32
 
 	AcceptCalls   []peer.ID
 	RejectCalls   []peer.ID
 	MarkReadCalls []peer.ID
 	SendCalls     []sendCall
+	SetNameCalls  []string
+	AddCalls      []string
+	RenameCalls   []renameCall
+}
+
+type renameCall struct {
+	ID   peer.ID
+	Name string
 }
 
 type sendCall struct {
@@ -81,12 +90,19 @@ func (f *fakeAPI) receive(id peer.ID, text string) event.MessageReceived {
 	return event.MessageReceived{Msg: m}
 }
 
-func (f *fakeAPI) PeerID() peer.ID                  { return peer.ID("me") }
-func (f *fakeAPI) DisplayName() string              { return f.name }
-func (f *fakeAPI) SetDisplayName(name string) error { f.name = name; return nil }
-func (f *fakeAPI) MyCard() (string, error)          { return "twocan:fake", nil }
+func (f *fakeAPI) PeerID() peer.ID     { return peer.ID("me") }
+func (f *fakeAPI) DisplayName() string { return f.name }
+func (f *fakeAPI) SetDisplayName(name string) error {
+	f.SetNameCalls = append(f.SetNameCalls, name)
+	f.name = name
+	return nil
+}
+func (f *fakeAPI) MyCard() (string, error) { return "twocan:fake", nil }
 
-func (f *fakeAPI) AddContact(context.Context, string) error { return errors.New("not in fake") }
+func (f *fakeAPI) AddContact(_ context.Context, card string) error {
+	f.AddCalls = append(f.AddCalls, card)
+	return f.addErr
+}
 func (f *fakeAPI) AddContactFromImage(context.Context, image.Image) error {
 	return errors.New("not in fake")
 }
@@ -101,8 +117,10 @@ func (f *fakeAPI) RejectContact(_ context.Context, id peer.ID) error {
 	return nil
 }
 
-func (f *fakeAPI) RenameContact(context.Context, peer.ID, string) error {
-	return errors.New("not in fake")
+func (f *fakeAPI) RenameContact(_ context.Context, id peer.ID, nickname string) error {
+	f.RenameCalls = append(f.RenameCalls, renameCall{ID: id, Name: nickname})
+	f.contact(id).Nickname = nickname
+	return nil
 }
 
 func (f *fakeAPI) Contacts(context.Context) ([]core.ContactView, error) {

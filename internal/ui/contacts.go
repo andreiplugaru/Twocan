@@ -32,7 +32,8 @@ func (v *MainView) buildContacts() {
 			c := v.contacts[id]
 			o.(*contactRow).set(c,
 				func() { v.accept(c.PeerID) },
-				func() { v.reject(c.PeerID) })
+				func() { v.reject(c.PeerID) },
+				func() { showRename(v.api, v.win, c.PeerID, c.Name()) })
 		})
 	v.contactList.OnSelected = func(id widget.ListItemID) { v.selectContact(v.contacts[id].PeerID) }
 }
@@ -138,7 +139,7 @@ type contactRow struct {
 	note   *widget.Label // "wants to add you" / "request sent"
 
 	accept, reject *widget.Button // pending_incoming only
-	more           *widget.Button // accepted only; rename comes with the dialogs
+	more           *widget.Button // accepted only: rename
 }
 
 func newContactRow() *contactRow {
@@ -163,8 +164,8 @@ func (r *contactRow) CreateRenderer() fyne.WidgetRenderer {
 	return widget.NewSimpleRenderer(container.NewBorder(nil, nil, dot, right, r.name))
 }
 
-// set shows c; onAccept and onReject run when its buttons are tapped.
-func (r *contactRow) set(c core.ContactView, onAccept, onReject func()) {
+// set shows c; onAccept, onReject and onMore run when its buttons are tapped.
+func (r *contactRow) set(c core.ContactView, onAccept, onReject, onMore func()) {
 	r.name.SetText(c.Name())
 
 	r.dot.FillColor = offlineColor()
@@ -186,7 +187,7 @@ func (r *contactRow) set(c core.ContactView, onAccept, onReject func()) {
 	}
 	showIf(r.note, r.note.Text != "")
 
-	r.accept.OnTapped, r.reject.OnTapped = onAccept, onReject
+	r.accept.OnTapped, r.reject.OnTapped, r.more.OnTapped = onAccept, onReject, onMore
 	showIf(r.accept, c.State == store.StatePendingIncoming)
 	showIf(r.reject, c.State == store.StatePendingIncoming)
 	showIf(r.more, c.State == store.StateAccepted)
