@@ -153,7 +153,15 @@ func TestKillMinus9LosesNothing(t *testing.T) {
 	require.NoError(t, syscall.Kill(b.cmd.Process.Pid, syscall.SIGKILL))
 	_ = b.cmd.Wait()
 	<-b.done
-	t.Logf("B printed %d messages before SIGKILL", b.count("<- alice: m-"))
+	before := b.count("<- alice: m-")
+	t.Logf("B printed %d messages before SIGKILL", before)
+	require.Less(t, before, total, "B received everything before the kill; crash path not exercised")
+
+	// The kill must have landed mid-transfer: A still has undelivered messages.
+	st := a.run("/stats bob", "in=", 10*time.Second)
+	m := statsRe.FindStringSubmatch(st)
+	require.NotNil(t, m, st)
+	require.NotEqual(t, "0", m[3], "A had no pending messages after the kill; crash path not exercised: %s", st)
 
 	b = startProc(t, bin, bArgs...)
 
