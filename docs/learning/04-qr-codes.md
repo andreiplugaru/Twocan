@@ -20,7 +20,7 @@ The usual phone-style flow is to point a camera at a code. For two friends on di
 - **Open QR image…** in "Add contact" opens a PNG or JPEG file someone sent you.
 - **Paste QR from clipboard** reads an image you copied, such as a screenshot of their QR code or of their "My card" window.
 
-This needs no camera permissions, no video library and no C code, so the app stays a simple pure-Go build. Live webcam scanning is left as a stretch goal.
+This needs no camera permissions and no video library. Both QR libraries are pure Go, so they add no C code of their own. (The desktop app as a whole still needs cgo and a C compiler, because Fyne draws with OpenGL through C; only the helper and the CLI build with `CGO_ENABLED=0`.) Live webcam scanning is left as a stretch goal.
 
 ## How pasting an image works on Linux
 

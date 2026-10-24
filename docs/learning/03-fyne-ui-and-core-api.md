@@ -30,7 +30,7 @@ Both panes use `widget.List`, which builds only the rows that are visible and re
 
 ## Dialogs
 
-[internal/ui/dialogs.go](../../internal/ui/dialogs.go) holds four modal dialogs. **First run** asks for your name and has no Cancel button, so it stays up until a name is saved. **My card** shows your card as a QR code (made by `identity.CardQRPNG`) and as text, with Copy and "Save QR as PNG…". **Add contact** takes a pasted card. **Rename** (the "⋯" button on an accepted contact) sets a local nickname only you see. The three input dialogs share one helper: on error they show the friendly text under the entry and stay open, and on success they close.
+[internal/ui/dialogs.go](../../internal/ui/dialogs.go) holds four modal dialogs. **First run** asks for your name and has no Cancel button, so it stays up until a name is saved. **My card** shows your card as a QR code (made by `identity.CardQRPNG`) and as text, with Copy and "Save QR as PNG…". **Add contact** takes a pasted card, or a QR code: "Open QR image…" reads a PNG or JPEG file, and "Paste QR from clipboard" reads a copied image such as a screenshot (note 4 explains how). **Rename** (the "⋯" button on an accepted contact) sets a local nickname only you see. The three input dialogs share one helper: on error they show the friendly text under the entry and stay open, and on success they close.
 
 ## Starting and stopping
 
