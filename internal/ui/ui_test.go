@@ -8,6 +8,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/require"
@@ -153,6 +154,40 @@ func TestPendingRequestShowsAcceptReject(t *testing.T) {
 	test.Tap(z.accept)
 	require.Equal(t, []peer.ID{zed}, f.AcceptCalls)
 	require.Empty(t, f.RejectCalls)
+}
+
+// requireFits fails unless l is laid out at least as wide as its text needs
+// untruncated.
+func requireFits(t *testing.T, l *widget.Label) {
+	t.Helper()
+	full := widget.NewLabelWithStyle(l.Text, l.Alignment, l.TextStyle).MinSize()
+	require.GreaterOrEqual(t, l.Size().Width, full.Width, "%q is cut off", l.Text)
+	require.GreaterOrEqual(t, l.Size().Height, full.Height, "%q is cut off", l.Text)
+}
+
+// In the default window every row shows its name, note and buttons whole,
+// and each row is as tall as it needs: no more, no less.
+func TestContactRowsFitDefaultWindow(t *testing.T) {
+	f := standardFake()
+	f.contact(ann).Unread = 3
+	v := newTestView(t, f)
+	rs := rows(v)
+	z, a, p := rs["Zed"], rs["Ann"], rs["Pat"]
+	require.NotNil(t, z)
+	require.NotNil(t, a)
+	require.NotNil(t, p)
+
+	for _, l := range []*widget.Label{z.name, z.note, a.name, a.unread, p.name, p.note} {
+		require.True(t, l.Visible(), "%q visible", l.Text)
+		requireFits(t, l)
+	}
+	for _, b := range []*widget.Button{z.accept, z.reject, a.more} {
+		require.GreaterOrEqual(t, b.Size().Width, b.MinSize().Width, "%q button", b.Text)
+	}
+	for _, r := range []*contactRow{z, a, p} {
+		require.Equal(t, r.MinSize().Height, r.Size().Height, "row %q height", r.name.Text)
+	}
+	require.Greater(t, z.Size().Height, a.Size().Height, "a request row is taller than a plain one")
 }
 
 func TestSelectContactLoadsHistoryAndMarksRead(t *testing.T) {

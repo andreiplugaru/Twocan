@@ -33,7 +33,8 @@ type MainView struct {
 	name        *widget.Label
 	contacts    []core.ContactView // shown rows: store order, blocked left out
 	contactList *widget.List
-	selected    peer.ID // "" when no contact is selected
+	selected    peer.ID     // "" when no contact is selected
+	rowMeasurer *contactRow // off-screen row used to measure row heights
 
 	// Right pane (chat.go).
 	peerName   *widget.Label      // header: the selected contact's name, "" when none

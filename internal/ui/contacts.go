@@ -36,6 +36,7 @@ func (v *MainView) buildContacts() {
 				func() { showRename(v.api, v.win, c.PeerID, c.Name()) })
 		})
 	v.contactList.OnSelected = func(id widget.ListItemID) { v.selectContact(v.contacts[id].PeerID) }
+	v.rowMeasurer = newContactRow()
 }
 
 // refreshName shows our own display name in the header.
@@ -57,6 +58,12 @@ func (v *MainView) reloadContacts() {
 		if c.State != store.StateBlocked {
 			v.contacts = append(v.contacts, c)
 		}
+	}
+	// Rows differ in height (a request row has two lines), so each row's
+	// height is measured; otherwise every row gets the template's.
+	for i, c := range v.contacts {
+		v.rowMeasurer.set(c, nil, nil, nil)
+		v.contactList.SetItemHeight(i, v.rowMeasurer.MinSize().Height)
 	}
 	if v.selected != "" {
 		if i := v.indexOf(v.selected); i >= 0 {
@@ -153,8 +160,9 @@ type contactRow struct {
 	unread *widget.Label
 	note   *widget.Label // "wants to add you" / "request sent"
 
-	accept, reject *widget.Button // pending_incoming only
-	more           *widget.Button // accepted only: rename
+	accept, reject *widget.Button  // pending_incoming only
+	actions        *fyne.Container // accept above reject
+	more           *widget.Button  // accepted only: rename
 }
 
 func newContactRow() *contactRow {
@@ -168,15 +176,23 @@ func newContactRow() *contactRow {
 		more:   widget.NewButton("⋯", nil),
 	}
 	r.name.Truncation = fyne.TextTruncateEllipsis
+	r.note.Truncation = fyne.TextTruncateEllipsis
+	r.actions = container.NewVBox(r.accept, r.reject)
 	r.accept.Importance = widget.HighImportance
 	r.ExtendBaseWidget(r)
 	return r
 }
 
+// CreateRenderer lays the row out as the dot and name, with the note (if
+// any) on a second line under them, and the unread count, ⋯ or the stacked
+// Accept/Reject buttons on the right. The right side always gets its full
+// width and the name only what is left, so the right side is kept narrow:
+// a request row is two lines tall rather than leaving the name no room.
 func (r *contactRow) CreateRenderer() fyne.WidgetRenderer {
 	dot := container.NewCenter(container.NewGridWrap(fyne.NewSquareSize(dotSize), r.dot))
-	right := container.NewHBox(r.unread, r.note, r.accept, r.reject, r.more)
-	return widget.NewSimpleRenderer(container.NewBorder(nil, nil, dot, right, r.name))
+	text := container.NewVBox(container.NewBorder(nil, nil, dot, nil, r.name), r.note)
+	right := container.NewHBox(r.unread, r.more, r.actions)
+	return widget.NewSimpleRenderer(container.NewBorder(nil, nil, nil, right, text))
 }
 
 // set shows c; onAccept, onReject and onMore run when its buttons are tapped.
@@ -205,7 +221,9 @@ func (r *contactRow) set(c core.ContactView, onAccept, onReject, onMore func()) 
 	r.accept.OnTapped, r.reject.OnTapped, r.more.OnTapped = onAccept, onReject, onMore
 	showIf(r.accept, c.State == store.StatePendingIncoming)
 	showIf(r.reject, c.State == store.StatePendingIncoming)
+	showIf(r.actions, c.State == store.StatePendingIncoming)
 	showIf(r.more, c.State == store.StateAccepted)
+	r.Refresh() // lay out again: which parts show may have changed
 }
 
 func showIf(o fyne.CanvasObject, show bool) {
