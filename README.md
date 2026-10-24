@@ -103,6 +103,7 @@ bin/twocan-cli --data-dir /tmp/ben --name Ben  # a second identity on the same m
 | `--listen` | `twocan-cli` | Comma-separated listen addresses (default: all interfaces, random ports) |
 | `--mdns` | `twocan-cli` | Find peers on the local network (default `true`) |
 | `--name` | `twocan-cli` | Display name (required on first run) |
+| `--log-level` | `twocan`, `twocan-cli` | How much goes in the log file: `debug`, `info` (default), `warn` or `error` |
 | `--key`, `--listen` | `twocan-helper` | Key file path (default `./helper.key`) and listen addresses (default port 4001) |
 
 ## Your data
@@ -111,6 +112,7 @@ Everything lives in the data directory, which is created with mode 0700:
 
 - `identity.key` is your private key, and your peer ID comes from it. If you lose it, you lose your identity, and contacts will have to add you again. If someone copies it, they can impersonate you.
 - `twocan.db` holds your contacts and message history. It is **not encrypted** in v1, so use full-disk encryption if that matters to you.
+- `twocan.log` is the log (rotated at 5 MB, the last 3 kept). It records connection attempts and why they failed, discoveries, contact requests and deliveries, with peer IDs and IP addresses but **never message text or keys**. When something misbehaves, run with `--log-level debug` and look here.
 
 Each install is its own identity. History does not sync between devices.
 
