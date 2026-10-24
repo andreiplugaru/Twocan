@@ -39,12 +39,14 @@ type MainView struct {
 	selected    peer.ID // "" when no contact is selected
 
 	// Right pane (chat.go).
-	msgs    []store.Message // conversation with selected, oldest first
-	heights map[widget.ListItemID]float32
-	convo   *widget.List
-	entry   *widget.Entry
-	send    *widget.Button
-	sendErr *widget.Label
+	msgs       []store.Message // conversation with selected, oldest first
+	convo      *widget.List
+	convoBox   *fyne.Container // convo, watched for width changes
+	convoWidth float32
+	measurer   *bubble // off-screen bubble used to measure row heights
+	entry      *widget.Entry
+	send       *widget.Button
+	sendErr    *widget.Label
 
 	// Status bar (status.go).
 	status *widget.Label
@@ -72,7 +74,7 @@ func (v *MainView) Content() fyne.CanvasObject {
 	left := container.NewBorder(header, addContact, nil, nil, v.contactList)
 
 	bar := container.NewBorder(v.sendErr, nil, nil, v.send, v.entry)
-	right := container.NewBorder(nil, bar, nil, nil, v.convo)
+	right := container.NewBorder(nil, bar, nil, nil, v.convoBox)
 
 	split := container.NewHSplit(left, right)
 	split.Offset = 0.3

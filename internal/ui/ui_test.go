@@ -186,6 +186,91 @@ func TestLongMessageWraps(t *testing.T) {
 	require.Less(t, bs[2].text.Size().Width, v.convo.Size().Width, "text wraps inside the bubble")
 }
 
+// requireBottomVisible checks that the newest bubble is fully inside the
+// conversation's viewport.
+func requireBottomVisible(t *testing.T, v *MainView, wantText string) {
+	t.Helper()
+	d := fyne.CurrentApp().Driver()
+	bs := bubbles(v)
+	last := bs[len(bs)-1]
+	require.Equal(t, wantText, last.text.Text)
+	bottom := d.AbsolutePositionForObject(last).Y + last.Size().Height
+	viewEnd := d.AbsolutePositionForObject(v.convo).Y + v.convo.Size().Height
+	require.LessOrEqual(t, bottom, viewEnd+0.5, "newest bubble is cut off below the viewport")
+	require.GreaterOrEqual(t, last.Size().Height, last.MinSize().Height, "newest bubble's row is too short")
+}
+
+func TestNewLongMessageScrolledIntoView(t *testing.T) {
+	f := standardFake()
+	for i := range 30 {
+		f.history[ann] = append(f.history[ann], f.newMsg(ann, store.DirIn, fmt.Sprintf("short %d", i)))
+	}
+	v := newTestView(t, f)
+	selectContact(t, v, ann)
+
+	received := strings.Repeat("word ", 300)
+	v.apply(f.receive(ann, received))
+	requireBottomVisible(t, v, received)
+
+	sent := strings.Repeat("mine ", 300)
+	typeAndEnter(v, sent)
+	requireBottomVisible(t, v, sent)
+}
+
+func TestRowsRemeasuredOnResize(t *testing.T) {
+	f := standardFake()
+	long := strings.Repeat("word ", 60)
+	f.history[ann] = append(f.history[ann], f.newMsg(ann, store.DirIn, long))
+	v := newTestView(t, f)
+	selectContact(t, v, ann)
+	wide := bubbles(v)[2]
+	require.Equal(t, long, wide.text.Text)
+	wideHeight := wide.Size().Height
+
+	v.win.Resize(fyne.NewSize(500, 600))
+
+	narrow := bubbles(v)[2]
+	require.Equal(t, long, narrow.text.Text)
+	require.Greater(t, narrow.Size().Height, wideHeight, "the row grows when the text wraps more")
+	require.GreaterOrEqual(t, narrow.Size().Height, narrow.MinSize().Height, "the row fits the wrapped text")
+}
+
+func TestSwitchingConversationsDropsOldHeights(t *testing.T) {
+	// Ann's first message is long and is measured when her conversation
+	// opens; she has enough short ones after it that it is off screen once
+	// the view scrolls to the bottom. Bob has only short messages.
+	f := standardFake()
+	f.history[ann] = []store.Message{f.newMsg(ann, store.DirIn, strings.Repeat("word ", 300))}
+	for i := range 40 {
+		f.history[ann] = append(f.history[ann], f.newMsg(ann, store.DirIn, fmt.Sprintf("ann %d", i)))
+		f.history[bob] = append(f.history[bob], f.newMsg(bob, store.DirIn, fmt.Sprintf("bob %d", i)))
+	}
+
+	fresh := newTestView(t, f)
+	selectContact(t, fresh, bob)
+	want := fresh.convo.GetScrollOffset()
+
+	v := newTestView(t, f)
+	selectContact(t, v, ann)
+	selectContact(t, v, bob)
+
+	require.InDelta(t, want, v.convo.GetScrollOffset(), 0.5,
+		"Bob's scroll extent must not include the height of Ann's long first message")
+}
+
+func TestReceivedMessageAlreadyInHistoryNotDuplicated(t *testing.T) {
+	f := standardFake()
+	// The node stores the message, the user opens the conversation, and only
+	// then does the queued event arrive.
+	ev := f.receive(ann, "racing")
+	v := newTestView(t, f)
+	selectContact(t, v, ann)
+
+	v.apply(ev)
+
+	require.Equal(t, []string{"hi there", "hello back", "racing"}, bubbleTexts(v))
+}
+
 func TestSendFromEntry(t *testing.T) {
 	f := standardFake()
 	v := newTestView(t, f)
