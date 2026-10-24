@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 
 	"twocan/internal/event"
 	"twocan/internal/identity"
+	"twocan/internal/logging"
 	"twocan/internal/p2p"
 	pb "twocan/internal/proto"
 	"twocan/internal/store"
@@ -88,6 +90,8 @@ type Service struct {
 
 	mu       sync.Mutex // guards limiters
 	limiters map[peer.ID]*rate.Limiter
+
+	log *slog.Logger
 }
 
 // New returns a Service. displayName returns our current display name, sent
@@ -102,8 +106,12 @@ func New(h host.Host, st *store.Store, r p2p.Reacher, bus *event.Bus, displayNam
 		readTimeout: exchangeTimeout,
 		tasks:       svc.NewTracker(),
 		limiters:    make(map[peer.ID]*rate.Limiter),
+		log:         logging.Discard(),
 	}
 }
+
+// SetLogger sets where the service logs; call it before Start.
+func (s *Service) SetLogger(l *slog.Logger) { s.log = l.With("component", "contacts") }
 
 // Start registers the inbound stream handler.
 func (s *Service) Start() {
@@ -208,6 +216,7 @@ func (s *Service) Add(ctx context.Context, card identity.Card) error {
 	}
 
 	flush := false
+	outcome := ""
 	changed, err := s.mutate(ctx, id, func(c store.Contact, found bool) (store.ContactUpdate, error) {
 		var u store.ContactUpdate
 		if len(card.Addrs) > 0 {
@@ -219,17 +228,20 @@ func (s *Service) Add(ctx context.Context, card identity.Card) error {
 			if name := sanitizeName(card.DisplayName); name != "" {
 				u.DisplayName = &name
 			}
-			flush = true
+			flush, outcome = true, "request queued"
 		case c.State == store.StatePendingIncoming: // same as Accept
 			u.State, u.PendingSend = ptr(store.StateAccepted), ptr(true)
-			flush = true
+			flush, outcome = true, "they had asked first: accepted"
 		default: // pending_outgoing or accepted: refresh addrs only
+			outcome = "already " + string(c.State) + ": addresses refreshed"
 		}
 		return u, nil
 	})
 	if err != nil {
+		s.log.Warn("add contact failed", "peer", id, "err", err)
 		return err
 	}
+	s.log.Info("contact added from card", "peer", id, "outcome", outcome, "card_addrs", len(card.Addrs))
 	if changed {
 		s.changed(id)
 	}
@@ -250,6 +262,7 @@ func (s *Service) Accept(ctx context.Context, id peer.ID) error {
 	if err != nil {
 		return err
 	}
+	s.log.Info("contact request accepted", "peer", id)
 	s.changed(id)
 	s.flushAsync(id)
 	return nil
@@ -263,6 +276,7 @@ func (s *Service) Reject(ctx context.Context, id peer.ID) error {
 	if err != nil {
 		return err
 	}
+	s.log.Info("contact blocked", "peer", id)
 	s.changed(id)
 	return nil
 }
@@ -279,17 +293,20 @@ func (s *Service) Flush(ctx context.Context, id peer.ID) error {
 	}
 	name := s.displayName()
 	var f pb.ContactFrame
+	var kind string
 	switch c.State {
 	case store.StatePendingOutgoing:
-		f.Body = &pb.ContactFrame_Request{Request: &pb.ContactRequest{DisplayName: name}}
+		f.Body, kind = &pb.ContactFrame_Request{Request: &pb.ContactRequest{DisplayName: name}}, "request"
 	case store.StateAccepted:
-		f.Body = &pb.ContactFrame_Accept{Accept: &pb.ContactAccept{DisplayName: name}}
+		f.Body, kind = &pb.ContactFrame_Accept{Accept: &pb.ContactAccept{DisplayName: name}}, "accept"
 	default:
 		return nil
 	}
 	if err := s.exchange(ctx, id, &f); err != nil {
+		s.log.Info("contact frame not delivered", "peer", id, "frame", kind, "err", err)
 		return err
 	}
+	s.log.Info("contact frame acknowledged", "peer", id, "frame", kind)
 
 	// Clear PendingSend only if we still owe the same frame: the state may
 	// have moved on (e.g. a mutual add) while we were sending.
@@ -378,6 +395,7 @@ func (s *Service) handleStream(str network.Stream) {
 
 	var f pb.ContactFrame
 	if err := wire.ReadFrame(bufio.NewReader(str), &f); err != nil {
+		s.log.Info("inbound contact frame unreadable", "peer", remote, "err", err)
 		str.Reset()
 		return
 	}
@@ -386,6 +404,8 @@ func (s *Service) handleStream(str network.Stream) {
 	case *pb.ContactFrame_Request:
 		if s.allowRequest(remote) {
 			err = s.onRequest(ctx, remote, sanitizeName(body.Request.GetDisplayName()))
+		} else {
+			s.log.Info("contact request rate-limited (acked, dropped)", "peer", remote)
 		}
 	case *pb.ContactFrame_Accept:
 		err = s.onAccept(ctx, remote, sanitizeName(body.Accept.GetDisplayName()))
@@ -393,11 +413,13 @@ func (s *Service) handleStream(str network.Stream) {
 		err = errUnexpectedFrame
 	}
 	if err != nil {
+		s.log.Warn("inbound contact frame not stored; stream reset so the sender retries", "peer", remote, "err", err)
 		str.Reset()
 		return
 	}
 	ack := &pb.ContactFrame{Body: &pb.ContactFrame_Ack{Ack: &pb.ContactAck{}}}
 	if err := wire.WriteFrame(str, ack); err != nil {
+		s.log.Info("contact ack not sent", "peer", remote, "err", err)
 		str.Reset()
 		return
 	}
@@ -409,6 +431,7 @@ func (s *Service) handleStream(str network.Stream) {
 // pending cap) return nil.
 func (s *Service) onRequest(ctx context.Context, id peer.ID, name string) error {
 	flush := false
+	outcome := ""
 	changed, err := s.mutate(ctx, id, func(c store.Contact, found bool) (store.ContactUpdate, error) {
 		var u store.ContactUpdate
 		if name != "" && name != c.DisplayName {
@@ -421,24 +444,28 @@ func (s *Service) onRequest(ctx context.Context, id peer.ID, name string) error 
 				return store.ContactUpdate{}, err
 			}
 			if n >= maxPendingIncoming {
+				outcome = "dropped: too many pending requests"
 				return store.ContactUpdate{}, nil
 			}
-			u.State = ptr(store.StatePendingIncoming)
+			u.State, outcome = ptr(store.StatePendingIncoming), "new request"
 		case c.State == store.StatePendingOutgoing: // mutual add
 			u.State, u.PendingSend = ptr(store.StateAccepted), ptr(true)
-			flush = true
+			flush, outcome = true, "mutual add: accepted"
 		case c.State == store.StateAccepted: // they lost state; resend Accept
 			u.PendingSend = ptr(true)
-			flush = true
+			flush, outcome = true, "already accepted: resending accept"
 		case c.State == store.StateBlocked:
+			outcome = "ignored: blocked"
 			return store.ContactUpdate{}, nil
 		default: // pending_incoming: update the name only
+			outcome = "repeat of a pending request"
 		}
 		return u, nil
 	})
 	if err != nil {
 		return err
 	}
+	s.log.Info("contact request received", "peer", id, "outcome", outcome)
 	if changed {
 		s.changed(id)
 	}
@@ -451,8 +478,10 @@ func (s *Service) onRequest(ctx context.Context, id peer.ID, name string) error 
 // onAccept applies a received ContactAccept: only a pending outgoing request
 // can be accepted. It returns an error only when the accept could not be stored.
 func (s *Service) onAccept(ctx context.Context, id peer.ID, name string) error {
+	outcome := "accepted"
 	changed, err := s.mutate(ctx, id, func(c store.Contact, found bool) (store.ContactUpdate, error) {
 		if !found || c.State != store.StatePendingOutgoing {
+			outcome = "ignored: no request pending"
 			return store.ContactUpdate{}, nil
 		}
 		// Our Request is answered; nothing more is owed.
@@ -465,6 +494,7 @@ func (s *Service) onAccept(ctx context.Context, id peer.ID, name string) error {
 	if err != nil {
 		return err
 	}
+	s.log.Info("contact accept received", "peer", id, "outcome", outcome)
 	if changed {
 		s.changed(id)
 	}

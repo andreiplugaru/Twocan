@@ -16,7 +16,9 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -27,6 +29,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"twocan/internal/event"
+	"twocan/internal/logging"
 	"twocan/internal/p2p"
 	pb "twocan/internal/proto"
 	"twocan/internal/store"
@@ -79,6 +82,8 @@ type Service struct {
 
 	tasks      *svc.Tracker // async flushes and inbound handlers
 	flushLocks svc.Locks[peer.ID]
+
+	log *slog.Logger // never given message text
 }
 
 // New returns a Service. Call Start to accept inbound streams.
@@ -90,7 +95,21 @@ func New(h host.Host, st *store.Store, r p2p.Reacher, bus *event.Bus) *Service {
 		bus:         bus,
 		readTimeout: frameTimeout,
 		tasks:       svc.NewTracker(),
+		log:         logging.Discard(),
 	}
+}
+
+// SetLogger sets where the service logs; call it before Start. Message text
+// is never logged, only IDs and counts.
+func (s *Service) SetLogger(l *slog.Logger) { s.log = l.With("component", "chat") }
+
+// msgID renders a message ID for logs: the same string on both devices.
+func msgID(id []byte) string {
+	u, err := uuid.FromBytes(id)
+	if err != nil {
+		return fmt.Sprintf("%x", id)
+	}
+	return u.String()
 }
 
 // Start registers the inbound stream handler.
@@ -161,8 +180,10 @@ func (s *Service) Send(ctx context.Context, to peer.ID, text string) (store.Mess
 		Status: store.StatusPending,
 	}
 	if err := s.st.InsertOutgoing(ctx, m); err != nil {
+		s.log.Warn("could not queue message", "peer", to, "err", err)
 		return store.Message{}, err
 	}
+	s.log.Info("message queued", "peer", to, "id", msgID(m.ID))
 	s.flushAsync(to)
 	return m, nil
 }
@@ -188,15 +209,19 @@ func (s *Service) Flush(ctx context.Context, id peer.ID) error {
 	// Never deliver to a peer that is no longer an accepted contact (e.g.
 	// blocked after the messages were queued).
 	if err := s.requireAccepted(ctx, id); err != nil {
+		s.log.Info("not delivering: peer is not an accepted contact", "peer", id, "pending", len(pending), "err", err)
 		return err
 	}
 	str, err := s.open(ctx, id)
 	if err != nil {
+		s.log.Info("delivery postponed: could not open chat stream", "peer", id, "pending", len(pending), "err", err)
 		return err
 	}
+	s.log.Info("delivering messages", "peer", id, "pending", len(pending))
 	r := bufio.NewReader(str)
-	for _, m := range pending {
+	for i, m := range pending {
 		if err := s.deliver(ctx, str, r, m); err != nil {
+			s.log.Info("delivery interrupted", "peer", id, "delivered", i, "still_pending", len(pending)-i, "id", msgID(m.ID), "err", err)
 			str.Reset()
 			return err
 		}
@@ -205,15 +230,18 @@ func (s *Service) Flush(ctx context.Context, id peer.ID) error {
 		// successful update is a real pending -> delivered transition.
 		ok, err := s.st.MarkDelivered(ctx, id, m.ID)
 		if err != nil {
+			s.log.Warn("could not mark message delivered", "peer", id, "id", msgID(m.ID), "err", err)
 			str.Reset()
 			return err
 		}
 		if ok {
+			s.log.Debug("message delivered", "peer", id, "id", msgID(m.ID))
 			s.bus.Publish(event.MessageDelivered{Peer: id, ID: m.ID})
 		}
 	}
 	// Everything was acked; a failing close changes nothing.
 	_ = str.Close()
+	s.log.Info("messages delivered", "peer", id, "count", len(pending))
 	return nil
 }
 
@@ -267,6 +295,7 @@ func (s *Service) handleStream(str network.Stream) {
 	err := s.requireAccepted(ctx, remote)
 	cancel()
 	if err != nil {
+		s.log.Info("chat stream rejected: sender is not an accepted contact", "peer", remote, "err", err)
 		str.Reset()
 		return
 	}
@@ -276,10 +305,12 @@ func (s *Service) handleStream(str network.Stream) {
 		err := s.receive(ctx, str, r, remote, acked)
 		cancel()
 		if errors.Is(err, io.EOF) {
+			s.log.Debug("chat stream closed by peer", "peer", remote, "acked", acked)
 			str.Close()
 			return
 		}
 		if err != nil {
+			s.log.Info("chat stream reset", "peer", remote, "acked", acked, "err", err)
 			str.Reset()
 			return
 		}
@@ -297,8 +328,8 @@ func (s *Service) receive(ctx context.Context, str network.Stream, r *bufio.Read
 		return errBadFrame
 	}
 	cm := f.GetMessage()
-	if cm == nil || len(cm.GetId()) != idLen || cm.GetSentAt() <= 0 || checkText(cm.GetText()) != nil {
-		return errBadFrame
+	if problem := frameProblem(cm); problem != "" {
+		return fmt.Errorf("%w: %s", errBadFrame, problem)
 	}
 	m := store.Message{
 		ID:         cm.GetId(),
@@ -311,11 +342,30 @@ func (s *Service) receive(ctx context.Context, str network.Stream, r *bufio.Read
 	}
 	inserted, err := s.st.InsertIncoming(ctx, m)
 	if err != nil {
-		return err
+		return fmt.Errorf("store incoming message: %w", err)
 	}
 	if inserted {
+		s.log.Info("message received", "peer", remote, "id", msgID(m.ID))
 		s.bus.Publish(event.MessageReceived{Msg: m})
+	} else {
+		s.log.Info("duplicate message acked again", "peer", remote, "id", msgID(m.ID))
 	}
 	ack := &pb.ChatFrame{Body: &pb.ChatFrame_Ack{Ack: &pb.Ack{Id: m.ID}}}
 	return wire.WriteFrame(str, ack)
+}
+
+// frameProblem says what is wrong with an inbound message ("" if nothing).
+func frameProblem(cm *pb.ChatMessage) string {
+	switch {
+	case cm == nil:
+		return "not a message"
+	case len(cm.GetId()) != idLen:
+		return "bad message id length"
+	case cm.GetSentAt() <= 0:
+		return "missing send time"
+	}
+	if err := checkText(cm.GetText()); err != nil {
+		return err.Error()
+	}
+	return ""
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"image"
 	"image/png"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"twocan/internal/contacts"
 	"twocan/internal/event"
 	"twocan/internal/identity"
+	"twocan/internal/logtest"
 	"twocan/internal/store"
 )
 
@@ -47,6 +49,11 @@ func (r mnReacher) Reach(_ context.Context, id peer.ID) error {
 // mn.LinkAll() after creating all nodes.
 func newMockNode(t *testing.T, mn mocknet.Mocknet, iv intervals) *Node {
 	t.Helper()
+	return newMockNodeLog(t, mn, iv, nil)
+}
+
+func newMockNodeLog(t *testing.T, mn mocknet.Mocknet, iv intervals, log *slog.Logger) *Node {
+	t.Helper()
 	h, err := mn.GenPeer()
 	require.NoError(t, err)
 	st, err := store.Open(filepath.Join(t.TempDir(), "twocan.db"))
@@ -54,7 +61,7 @@ func newMockNode(t *testing.T, mn mocknet.Mocknet, iv intervals) *Node {
 	connInfo := func(id peer.ID) (bool, bool) {
 		return h.Network().Connectedness(id) == network.Connected, false
 	}
-	n, err := startWith(t.Context(), h, st, mnReacher{mn: mn, self: h.ID()}, connInfo, iv)
+	n, err := startWith(t.Context(), h, st, mnReacher{mn: mn, self: h.ID()}, connInfo, iv, log)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, n.Stop()) })
 	return n
@@ -134,6 +141,35 @@ func befriend(t *testing.T, a, b *Node) {
 	require.NoError(t, b.AcceptContact(t.Context(), a.PeerID()))
 	require.Eventually(t, func() bool { return stateOf(a, b.PeerID()) == store.StateAccepted }, waitFor, poll)
 	require.Equal(t, store.StateAccepted, stateOf(b, a.PeerID()))
+}
+
+func TestLogsConnectionsAndNeverMessageText(t *testing.T) {
+	mn := newMocknet(t)
+	alog, alogs := logtest.New()
+	blog, blogs := logtest.New()
+	a := newMockNodeLog(t, mn, intervals{}, alog)
+	b := newMockNodeLog(t, mn, intervals{}, blog)
+	require.NoError(t, mn.LinkAll())
+	require.Contains(t, alogs.String(), `msg=starting component=core peer=`+a.PeerID().String()+` contacts=0`)
+
+	aEvents, cancel := a.Subscribe()
+	defer cancel()
+	befriend(t, a, b)
+	waitEvent(t, aEvents, func(e event.Connectivity) bool { return e.Peer == b.PeerID() && e.Connected })
+	require.Contains(t, alogs.String(), `msg="contact connected" component=core peer=`+b.PeerID().String()+` relayed=false`)
+
+	const secret = "secret-text-91c2"
+	m, err := a.Send(t.Context(), b.PeerID(), secret)
+	require.NoError(t, err)
+	waitEvent(t, aEvents, func(e event.MessageDelivered) bool { return bytes.Equal(e.ID, m.ID) })
+
+	require.NoError(t, mn.DisconnectPeers(a.PeerID(), b.PeerID()))
+	waitEvent(t, aEvents, func(e event.Connectivity) bool { return e.Peer == b.PeerID() && !e.Connected })
+	require.Contains(t, alogs.String(), `msg="contact disconnected" component=core peer=`+b.PeerID().String())
+
+	for _, logs := range []string{alogs.String(), blogs.String()} {
+		require.NotContains(t, logs, secret)
+	}
 }
 
 func TestEndToEndOverMocknet(t *testing.T) {

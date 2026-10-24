@@ -12,6 +12,7 @@ import (
 
 	"twocan/internal/cli"
 	"twocan/internal/core"
+	"twocan/internal/logging"
 )
 
 func main() { os.Exit(run()) }
@@ -33,7 +34,13 @@ func run() int {
 	listen := flag.String("listen", "", "comma-separated listen multiaddrs; empty for none")
 	mdns := flag.Bool("mdns", true, "discover peers on the local network")
 	name := flag.String("name", "", "display name (required on first run)")
+	logLevel := flag.String("log-level", "info", "log file detail: debug, info, warn or error")
 	flag.Parse()
+	level, err := logging.ParseLevel(*logLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
 
 	opts := core.Options{DataDir: *dataDir, EnableMDNS: *mdns}
 	// An explicitly empty --bootstrap/--listen means none; unset means default.
@@ -54,11 +61,21 @@ func run() int {
 		opts.DataDir = dir
 	}
 
+	l, err := logging.Open(opts.DataDir, level)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	defer l.Close()
+	fmt.Fprintln(os.Stderr, "logging to", l.Path)
+	opts.Log = l.Logger
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	node, err := core.Start(ctx, opts)
 	if err != nil {
+		l.Error("start failed", "err", err)
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
