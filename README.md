@@ -14,9 +14,27 @@ Twocan v1 is a learning project: one-to-one text chat only. The notes in [`docs/
 | `twocan-cli` | The same thing in a terminal, handy for testing and scripting |
 | `twocan-helper` | The helper server: peer discovery (private DHT), relay, reachability checks |
 
+## Download
+
+Grab the binaries from the [latest release](https://github.com/andreiplugaru/Twocan/releases/latest):
+
+| File | For |
+| --- | --- |
+| `twocan-linux-amd64` | Desktop app (x86-64). Needs the usual desktop OpenGL/X11 libraries, which are already installed on any Linux desktop |
+| `twocan-cli-linux-amd64`, `twocan-cli-linux-arm64` | Terminal client (static, no dependencies) |
+| `twocan-helper-linux-amd64`, `twocan-helper-linux-arm64` | Helper server (static), plus `twocan-helper.service` |
+| `SHA256SUMS` | Checksums: `sha256sum -c SHA256SUMS --ignore-missing` |
+
+```bash
+chmod +x twocan-linux-amd64
+./twocan-linux-amd64
+```
+
+If the release was built with a helper address (see [Releases](#releases)), the binaries already know where your helper is, so no `--bootstrap` flag is needed.
+
 ## Build
 
-You need Go 1.27+ and, for the desktop app, a C compiler and the OpenGL/X11 development libraries that [Fyne](https://fyne.io) uses.
+To build from source instead, you need Go 1.27+ and, for the desktop app, a C compiler and the OpenGL/X11 development libraries that [Fyne](https://fyne.io) uses.
 
 ```bash
 # Manjaro / Arch
@@ -50,7 +68,7 @@ People on different home networks need the helper server so they can find each o
 1. **Run the helper** on a small VPS with a public IP. You need to open TCP and UDP port 4001. Full step-by-step instructions, including the systemd unit in [`deploy/twocan-helper.service`](deploy/twocan-helper.service), are in [docs/learning/02](docs/learning/02-nat-dht-relay-holepunch.md).
 2. **Point the apps at it.** The helper prints addresses like `/ip4/203.0.113.7/tcp/4001/p2p/12D3KooW...`. You can either:
    - pass them on every launch: `bin/twocan --bootstrap /ip4/203.0.113.7/tcp/4001/p2p/12D3KooW...,/ip4/203.0.113.7/udp/4001/quic-v1/p2p/12D3KooW...`, or
-   - put them in `DefaultBootstrap` in [`internal/p2p/bootstrap.go`](internal/p2p/bootstrap.go) and rebuild, so no flag is needed.
+   - bake them into the binaries so no flag is needed: set the `TWOCAN_BOOTSTRAP` repository variable and cut a release (see [Releases](#releases)), or build locally with `-ldflags "-X twocan/internal/p2p.bootstrapAddrs=<addr1>,<addr2>"`.
 3. Add each other with your cards as above. The status bar shows whether you're reachable and whether the open conversation is **direct** or **via relay**.
 
 ## Command-line client
@@ -108,6 +126,18 @@ Each install is its own identity. History does not sync between devices.
 go test -race ./...                              # unit + in-process network tests
 go test -tags integration ./cmd/twocan-cli/      # kill -9 durability test (~20 s)
 ```
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs vet, the race-enabled test suite and the durability test on every push to `main` and on every pull request.
+
+## Releases
+
+1. **Once:** in GitHub, go to *Settings → Secrets and variables → Actions → Variables* and add `TWOCAN_BOOTSTRAP`. Its value is your helper's addresses, comma-separated, e.g. `/ip4/203.0.113.7/tcp/4001/p2p/12D3KooW...,/ip4/203.0.113.7/udp/4001/quic-v1/p2p/12D3KooW...`. This is optional; without it, users pass `--bootstrap`.
+2. **Each release:** tag and push.
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+   [`.github/workflows/release.yml`](.github/workflows/release.yml) reruns the full test suite. It then builds the binaries listed under [Download](#download) with the helper addresses baked in, and publishes them as a GitHub release with generated notes.
 
 Design: [`docs/superpowers/specs/2026-10-23-twocan-design.md`](docs/superpowers/specs/2026-10-23-twocan-design.md). Plan: [`docs/superpowers/plans/2026-10-23-twocan-v1.md`](docs/superpowers/plans/2026-10-23-twocan-v1.md).
 
