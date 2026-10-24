@@ -382,3 +382,55 @@ func TestStatusBar(t *testing.T) {
 	require.Equal(t, "You are reachable: public · direct", v.status.Text)
 	require.Equal(t, offlineColor(), rows(v)["Bob"].dot.FillColor)
 }
+
+func TestDraftKeptPerContact(t *testing.T) {
+	f := standardFake()
+	v := newTestView(t, f)
+	selectContact(t, v, ann)
+	test.Type(v.entry, "for ann")
+
+	selectContact(t, v, bob)
+	require.Empty(t, v.entry.Text, "Ann's draft does not follow to Bob")
+	test.Type(v.entry, "for bob")
+
+	selectContact(t, v, ann)
+	require.Equal(t, "for ann", v.entry.Text)
+	selectContact(t, v, bob)
+	require.Equal(t, "for bob", v.entry.Text)
+	require.Empty(t, f.SendCalls)
+
+	// A sent message is not kept as a draft.
+	v.entry.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+	require.Equal(t, []sendCall{{To: bob, Text: "for bob"}}, f.SendCalls)
+	selectContact(t, v, ann)
+	selectContact(t, v, bob)
+	require.Empty(t, v.entry.Text)
+
+	// Bob is blocked while his conversation is open: the entry clears.
+	test.Type(v.entry, "never sent")
+	f.contact(bob).State = store.StateBlocked
+	v.apply(event.ContactChanged{Peer: bob})
+	require.Empty(t, v.entry.Text)
+	selectContact(t, v, ann)
+	require.Equal(t, "for ann", v.entry.Text)
+}
+
+func TestConversationHeader(t *testing.T) {
+	f := standardFake()
+	v := newTestView(t, f)
+	require.Empty(t, v.peerName.Text, "nothing selected")
+
+	selectContact(t, v, ann)
+	require.Equal(t, "Ann", v.peerName.Text)
+	require.True(t, v.peerName.Visible())
+	selectContact(t, v, pat)
+	require.Equal(t, "Pat", v.peerName.Text)
+
+	f.contact(pat).Nickname = "Patricia"
+	v.apply(event.ContactChanged{Peer: pat})
+	require.Equal(t, "Patricia", v.peerName.Text)
+
+	f.contact(pat).State = store.StateBlocked
+	v.apply(event.ContactChanged{Peer: pat})
+	require.Empty(t, v.peerName.Text)
+}

@@ -36,7 +36,9 @@ type MainView struct {
 	selected    peer.ID // "" when no contact is selected
 
 	// Right pane (chat.go).
-	msgs       []store.Message // conversation with selected, oldest first
+	peerName   *widget.Label      // header: the selected contact's name, "" when none
+	drafts     map[peer.ID]string // unsent entry text of the contacts not selected
+	msgs       []store.Message    // conversation with selected, oldest first
 	convo      *widget.List
 	convoBox   *fyne.Container // convo, watched for width changes
 	convoWidth float32
@@ -74,7 +76,7 @@ func (v *MainView) Content() fyne.CanvasObject {
 	left := container.NewBorder(header, addContact, nil, nil, v.contactList)
 
 	bar := container.NewBorder(v.sendErr, nil, nil, v.send, v.entry)
-	right := container.NewBorder(nil, bar, nil, nil, v.convoBox)
+	right := container.NewBorder(v.peerName, bar, nil, nil, v.convoBox)
 
 	split := container.NewHSplit(left, right)
 	split.Offset = 0.3

@@ -64,10 +64,17 @@ func (v *MainView) reloadContacts() {
 		} else {
 			v.contactList.UnselectAll()
 			v.selected = ""
+			v.entry.SetText("") // the draft for a contact that is gone is dropped
 			v.showConversation(nil)
 		}
 	}
+	for id := range v.drafts {
+		if v.indexOf(id) < 0 {
+			delete(v.drafts, id)
+		}
+	}
 	v.contactList.Refresh()
+	v.updateHeader()
 	v.updateEntry()
 	v.updateStatus()
 }
@@ -89,11 +96,18 @@ func (v *MainView) selectedContact() (core.ContactView, bool) {
 	return core.ContactView{}, false
 }
 
-// selectContact shows the conversation with id and marks it read.
+// selectContact shows the conversation with id and marks it read. The
+// entry's unsent text is kept as the previous contact's draft, and id's own
+// draft (if any) comes back into the entry.
 func (v *MainView) selectContact(id peer.ID) {
 	if id == v.selected {
 		return
 	}
+	if v.selected != "" && v.entry.Text != "" {
+		v.drafts[v.selected] = v.entry.Text
+	}
+	v.entry.SetText(v.drafts[id])
+	delete(v.drafts, id)
 	v.selected = id
 	v.sendErr.Hide()
 	msgs, err := v.api.History(v.ctx, id)
@@ -102,6 +116,7 @@ func (v *MainView) selectContact(id peer.ID) {
 	}
 	v.showConversation(msgs)
 	v.markRead()
+	v.updateHeader()
 	v.updateEntry()
 	v.updateStatus()
 }

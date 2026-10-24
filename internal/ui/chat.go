@@ -19,6 +19,9 @@ const bubbleWidth = 0.75
 
 // buildChat creates the right pane's widgets.
 func (v *MainView) buildChat() {
+	v.peerName = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	v.peerName.Truncation = fyne.TextTruncateEllipsis
+	v.drafts = make(map[peer.ID]string)
 	v.convo = widget.NewList(
 		func() int { return len(v.msgs) },
 		func() fyne.CanvasObject { return newBubble() },
@@ -94,6 +97,15 @@ func (v *MainView) indexOfMsg(id []byte, dir store.Direction) int {
 		}
 	}
 	return -1
+}
+
+// updateHeader shows the selected contact's name above the conversation.
+func (v *MainView) updateHeader() {
+	name := ""
+	if c, ok := v.selectedContact(); ok {
+		name = c.Name()
+	}
+	v.peerName.SetText(name)
 }
 
 // updateEntry enables the entry and Send only for an accepted contact.
