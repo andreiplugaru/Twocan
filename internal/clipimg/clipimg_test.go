@@ -7,9 +7,13 @@ import (
 	"image"
 	"image/png"
 	"os/exec"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"twocan/internal/identity"
+	"twocan/internal/imgtest"
 )
 
 // stubRun replaces run for the test with one that records its command and
@@ -68,6 +72,33 @@ func TestClipimgNotImage(t *testing.T) {
 	stubRun(t, []byte("hello"), nil)
 	_, err := Read(t.Context())
 	require.ErrorIs(t, err, ErrNoImage)
+}
+
+func TestClipimgTooManyBytes(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "x")
+	big := append(pngBytes(t), make([]byte, maxBytes)...)
+	stubRun(t, big, nil)
+	_, err := Read(t.Context())
+	require.ErrorIs(t, err, ErrNoImage)
+}
+
+func TestClipimgHugeDimensions(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "x")
+	stubRun(t, imgtest.HugePNGHeader(100000, 100000), nil)
+	_, err := Read(t.Context())
+	require.ErrorIs(t, err, ErrNoImage)
+	require.ErrorIs(t, err, identity.ErrImageTooLarge)
+}
+
+// The real run stops reading a tool's output past maxBytes.
+func TestRunCapsOutput(t *testing.T) {
+	out, err := run(t.Context(), "head", "-c", strconv.Itoa(maxBytes+1<<20), "/dev/zero")
+	require.Error(t, err)
+	require.LessOrEqual(t, len(out), maxBytes)
+
+	out, err = run(t.Context(), "head", "-c", "10", "/dev/zero")
+	require.NoError(t, err)
+	require.Len(t, out, 10)
 }
 
 func TestClipimgNoDisplay(t *testing.T) {

@@ -5,10 +5,14 @@ import (
 	"image"
 	"image/draw"
 	"image/png"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	xdraw "golang.org/x/image/draw"
+
+	"twocan/internal/imgtest"
 )
 
 func TestCardQRPNGDecodesAsPNG(t *testing.T) {
@@ -69,6 +73,35 @@ func TestDecodeCardQRFromScreenshotLike(t *testing.T) {
 func TestDecodeCardQRNoCode(t *testing.T) {
 	_, err := DecodeCardQR(white(400, 300))
 	require.ErrorIs(t, err, ErrNoQRCode)
+}
+
+func TestDecodeImage(t *testing.T) {
+	b, err := CardQRPNG("twocan:abcdefgh", 256)
+	require.NoError(t, err)
+	// A reader without ReadByte, so the header is read through a buffer that
+	// reads ahead; the full decode must still see every byte.
+	img, err := DecodeImage(struct{ io.Reader }{bytes.NewReader(b)})
+	require.NoError(t, err)
+	require.Equal(t, image.Rect(0, 0, 256, 256), img.Bounds())
+
+	_, err = DecodeImage(strings.NewReader("not an image"))
+	require.ErrorIs(t, err, image.ErrFormat)
+}
+
+func TestDecodeImageRejectsHugeDimensions(t *testing.T) {
+	// 100000×100000 is 10 gigapixels. The header carries no pixel data, so
+	// ErrImageTooLarge (rather than a truncated-data error, or running out
+	// of memory) shows the size was checked before decoding.
+	_, err := DecodeImage(bytes.NewReader(imgtest.HugePNGHeader(100000, 100000)))
+	require.ErrorIs(t, err, ErrImageTooLarge)
+
+	// Just over the limit is rejected too; at the limit is decoded (and here
+	// fails only for the missing pixel data).
+	_, err = DecodeImage(bytes.NewReader(imgtest.HugePNGHeader(MaxImagePixels/1000+1, 1000)))
+	require.ErrorIs(t, err, ErrImageTooLarge)
+	_, err = DecodeImage(bytes.NewReader(imgtest.HugePNGHeader(1000, 1000)))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrImageTooLarge)
 }
 
 func TestDecodeCardQRNotTwocan(t *testing.T) {

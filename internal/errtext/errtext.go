@@ -28,6 +28,7 @@ var known = []struct {
 	{contacts.ErrNotPending, "There is no pending request from this contact"},
 	{core.ErrNameTooLong, "Name is too long (max 64 characters)"},
 	{identity.ErrNoQRCode, "No QR code found in that image"},
+	{identity.ErrImageTooLarge, "That image is too large (max 40 megapixels)"},
 	{clipimg.ErrNoTool, "Please install wl-clipboard (Wayland) or xclip (X11) to paste images"},
 	{clipimg.ErrNoImage, "The clipboard has no image; copy a screenshot of the QR code first"},
 }

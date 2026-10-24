@@ -19,6 +19,7 @@ import (
 	"twocan/internal/core"
 	"twocan/internal/event"
 	"twocan/internal/identity"
+	"twocan/internal/imgtest"
 	"twocan/internal/store"
 )
 
@@ -157,6 +158,9 @@ func TestCLIAddQRErrors(t *testing.T) {
 	require.Contains(t, runScript(t, f, "/addqr"), "usage: /addqr <image file>")
 	missing := filepath.Join(t.TempDir(), "nope.png")
 	require.Contains(t, runScript(t, f, "/addqr "+missing), "error: ")
+	huge := filepath.Join(t.TempDir(), "huge.png")
+	require.NoError(t, os.WriteFile(huge, imgtest.HugePNGHeader(100000, 100000), 0o600))
+	require.Contains(t, runScript(t, f, "/addqr "+huge), "error: That image is too large")
 	require.Empty(t, f.images)
 }
 

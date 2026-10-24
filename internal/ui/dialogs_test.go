@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"twocan/internal/identity"
+	"twocan/internal/imgtest"
 )
 
 // dialogOpen returns the top dialog on w, or nil if none is open.
@@ -170,6 +171,10 @@ func TestAddFromImageFileDecodesAndAdds(t *testing.T) {
 
 	require.Error(t, addFromImageFile(f, strings.NewReader("not an image")))
 	require.Len(t, f.AddImageCalls, 1, "undecodable file never reaches the core")
+
+	err = addFromImageFile(f, bytes.NewReader(imgtest.HugePNGHeader(100000, 100000)))
+	require.ErrorIs(t, err, identity.ErrImageTooLarge)
+	require.Len(t, f.AddImageCalls, 1, "oversized image never reaches the core")
 }
 
 func TestFirstRunRejectsBlankName(t *testing.T) {

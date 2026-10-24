@@ -9,8 +9,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"image"
-	_ "image/jpeg" // image.Decode reads JPEG
-	_ "image/png"  // and PNG
 	"io"
 	"os"
 	"strings"
@@ -226,7 +224,7 @@ func decodeImageFile(path string) (image.Image, error) {
 		return nil, err
 	}
 	defer f.Close()
-	img, _, err := image.Decode(f)
+	img, err := identity.DecodeImage(f)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

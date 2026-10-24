@@ -8,9 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/png"
 	"os"
 	"os/exec"
+
+	"twocan/internal/identity"
 )
 
 var (
@@ -22,9 +23,44 @@ var (
 	errNoDisplay = errors.New("no Wayland or X11 session to read the clipboard from")
 )
 
-// run runs a command and returns its standard output. Tests replace it.
+// maxBytes caps how much clipboard data we read (a 4K screenshot as PNG is
+// a few MB).
+const maxBytes = 32 << 20
+
+// errTooMuch stops a tool whose output passes maxBytes.
+var errTooMuch = fmt.Errorf("more than %d MiB of data", maxBytes>>20)
+
+// run runs a command and returns its standard output, failing with
+// errTooMuch once it passes maxBytes. Tests replace it.
 var run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
+	out := &cappedBuffer{max: maxBytes}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = out
+	err := cmd.Run()
+	if out.over {
+		// The tool may have died writing to the closed pipe; the cap is
+		// the real reason.
+		return nil, errTooMuch
+	}
+	return out.buf.Bytes(), err
+}
+
+// cappedBuffer keeps up to max bytes and fails any write past that, which
+// makes exec stop copying from the tool. The buffer is a named field, not
+// embedded: an embedded bytes.Buffer's ReadFrom would let io.Copy bypass
+// Write and the cap.
+type cappedBuffer struct {
+	buf  bytes.Buffer
+	max  int
+	over bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len()+len(p) > b.max {
+		b.over = true
+		return 0, errTooMuch
+	}
+	return b.buf.Write(p)
 }
 
 // Read returns the PNG image on the clipboard.
@@ -49,10 +85,15 @@ func Read(ctx context.Context) (image.Image, error) {
 	case err != nil:
 		// Both tools fail when the clipboard is empty or holds no PNG.
 		return nil, fmt.Errorf("%w (%s: %v)", ErrNoImage, name, err)
+	case len(out) > maxBytes:
+		return nil, fmt.Errorf("%w (%v)", ErrNoImage, errTooMuch)
 	case len(out) == 0:
 		return nil, ErrNoImage
 	}
-	img, err := png.Decode(bytes.NewReader(out))
+	img, err := identity.DecodeImage(bytes.NewReader(out))
+	if errors.Is(err, identity.ErrImageTooLarge) {
+		return nil, fmt.Errorf("%w: %w", ErrNoImage, err)
+	}
 	if err != nil {
 		return nil, ErrNoImage
 	}

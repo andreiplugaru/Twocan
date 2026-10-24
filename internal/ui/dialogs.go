@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"image"
-	_ "image/jpeg" // image.Decode reads JPEG
-	_ "image/png"  // and PNG
 	"io"
 	"strings"
 	"time"
@@ -161,7 +158,7 @@ func openQRImage(api core.API, w fyne.Window, done func(error)) {
 // addFromImageFile decodes a PNG or JPEG image from r and adds the contact
 // on the QR code in it.
 func addFromImageFile(api core.API, r io.Reader) error {
-	img, _, err := image.Decode(r)
+	img, err := identity.DecodeImage(r)
 	if err != nil {
 		return err
 	}
