@@ -4,7 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
+	_ "image/jpeg" // image.Decode reads JPEG
+	_ "image/png"  // and PNG
+	"io"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -15,6 +20,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"twocan/internal/clipimg"
 	"twocan/internal/core"
 	"twocan/internal/errtext"
 	"twocan/internal/identity"
@@ -28,6 +34,9 @@ const (
 	// dialogWidth is the width of our dialogs; their content alone would
 	// make them narrow.
 	dialogWidth = 440
+	// pasteTimeout bounds the wait for the clipboard tool, which runs on the
+	// UI goroutine.
+	pasteTimeout = 3 * time.Second
 )
 
 // errBlankName is shown when a name entry is left blank.
@@ -113,16 +122,61 @@ func saveQR(w fyne.Window, png []byte) {
 	fd.Show()
 }
 
-// showAddContact asks for a pasted contact card and adds that contact.
+// showAddContact adds a contact from a pasted card, from a QR code image
+// file, or from a QR code image (such as a screenshot) on the clipboard.
 func showAddContact(api core.API, w fyne.Window) {
 	entry := widget.NewMultiLineEntry()
 	entry.SetPlaceHolder("twocan:…")
 	entry.Wrapping = fyne.TextWrapBreak
 	entry.SetMinRowsVisible(4)
-	showForm(w, "Add contact", "Paste your contact's card.", "Add", entry, true,
+	showForm(w, "Add contact", "Paste their card, or use a picture of their QR code.",
+		"Add", entry, true,
 		func(text string) error {
 			return api.AddContact(context.Background(), text)
-		})
+		},
+		formButton{"Open QR image…", func(done func(error)) { openQRImage(api, w, done) }},
+		formButton{"Paste QR from clipboard", func(done func(error)) { done(pasteQR(api)) }},
+	)
+}
+
+// openQRImage asks for a PNG or JPEG file and adds the contact on the QR
+// code in it, then calls done with the outcome. A cancelled file dialog
+// does not call done.
+func openQRImage(api core.API, w fyne.Window, done func(error)) {
+	fd := dialog.NewFileOpen(func(in fyne.URIReadCloser, err error) {
+		if err != nil {
+			done(err)
+			return
+		}
+		if in == nil { // cancelled
+			return
+		}
+		defer in.Close()
+		done(addFromImageFile(api, in))
+	}, w)
+	fd.SetFilter(storage.NewExtensionFileFilter([]string{".png", ".jpg", ".jpeg"}))
+	fd.Show()
+}
+
+// addFromImageFile decodes a PNG or JPEG image from r and adds the contact
+// on the QR code in it.
+func addFromImageFile(api core.API, r io.Reader) error {
+	img, _, err := image.Decode(r)
+	if err != nil {
+		return err
+	}
+	return api.AddContactFromImage(context.Background(), img)
+}
+
+// pasteQR adds the contact on the QR code in the clipboard image.
+func pasteQR(api core.API) error {
+	ctx, cancel := context.WithTimeout(context.Background(), pasteTimeout)
+	defer cancel()
+	img, err := clipimg.Read(ctx)
+	if err != nil {
+		return err
+	}
+	return api.AddContactFromImage(context.Background(), img)
 }
 
 // showRename asks for a new local nickname for contact id, whose name is
@@ -140,20 +194,30 @@ func showRename(api core.API, w fyne.Window, id peer.ID, current string) {
 		})
 }
 
-// showForm shows a dialog with prompt, entry and an action button, plus a
-// Cancel button if cancel is set. The action (or Enter in a single-line
-// entry) runs submit on the entry text: on success the dialog closes,
-// otherwise the error is shown under the entry and the dialog stays open.
+// formButton is an extra button in a form, shown under the entry. Its run
+// reports its outcome by calling done, possibly later: nil closes the
+// dialog, an error is shown as submit's errors are.
+type formButton struct {
+	label string
+	run   func(done func(error))
+}
+
+// showForm shows a dialog with prompt, entry, any extra buttons and an
+// action button, plus a Cancel button if cancel is set. The action (or
+// Enter in a single-line entry) runs submit on the entry text: on success
+// the dialog closes, otherwise the error is shown at the bottom of the
+// dialog and it stays open.
 func showForm(w fyne.Window, title, prompt, action string, entry *widget.Entry,
-	cancel bool, submit func(string) error) {
+	cancel bool, submit func(string) error, extras ...formButton) {
 	errText := widget.NewLabel("")
 	errText.Importance = widget.DangerImportance
+	errText.Wrapping = fyne.TextWrapWord // the install hint is long
 	errText.Hide()
-	content := container.NewVBox(widget.NewLabel(prompt), entry, errText)
+	content := container.NewVBox(widget.NewLabel(prompt), entry)
 	d := dialog.NewCustomWithoutButtons(title, content, w)
 
-	run := func() {
-		if err := submit(entry.Text); err != nil {
+	done := func(err error) {
+		if err != nil {
 			errText.SetText(errtext.FriendlyError(err))
 			errText.Show()
 			d.Resize(fyne.NewSize(dialogWidth, 0)) // grow to fit errText
@@ -161,6 +225,16 @@ func showForm(w fyne.Window, title, prompt, action string, entry *widget.Entry,
 		}
 		d.Hide()
 	}
+	if len(extras) > 0 {
+		row := container.NewHBox()
+		for _, x := range extras {
+			row.Add(widget.NewButton(x.label, func() { x.run(done) }))
+		}
+		content.Add(row)
+	}
+	content.Add(errText)
+
+	run := func() { done(submit(entry.Text)) }
 	ok := widget.NewButton(action, run)
 	ok.Importance = widget.HighImportance
 	buttons := []fyne.CanvasObject{ok}

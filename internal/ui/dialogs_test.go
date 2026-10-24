@@ -1,7 +1,12 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -93,6 +98,78 @@ func TestAddContactDialogClosesOnSuccess(t *testing.T) {
 
 	require.Equal(t, []string{"twocan:good"}, f.AddCalls)
 	require.Nil(t, dialogOpen(v.win))
+}
+
+// fakePasteTool puts an executable named wl-paste that runs script first on
+// PATH (alone, so no real clipboard tool is found) and pretends we are on
+// Wayland. An empty script leaves PATH with no wl-paste at all.
+func fakePasteTool(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	if script != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "wl-paste"),
+			[]byte("#!/bin/sh\n"+script+"\n"), 0o700))
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("WAYLAND_DISPLAY", "wayland-test")
+}
+
+func TestAddDialogPasteQRShowsNoToolError(t *testing.T) {
+	fakePasteTool(t, "")
+	f := standardFake()
+	v := newTestView(t, f)
+	d := openDialog(t, v, "Add contact")
+
+	test.Tap(findButton(t, d, "Paste QR from clipboard"))
+
+	require.Empty(t, f.AddImageCalls)
+	require.Same(t, d, dialogOpen(v.win), "dialog stays open")
+	var hint bool
+	for _, s := range labelTexts(d) {
+		hint = hint || strings.Contains(s, "install wl-clipboard (Wayland) or xclip (X11) to paste images")
+	}
+	require.True(t, hint, "install hint shown in %q", labelTexts(d))
+}
+
+func TestAddDialogPasteQRAddsContact(t *testing.T) {
+	b, err := identity.CardQRPNG("twocan:abcdefgh", 256)
+	require.NoError(t, err)
+	qr := filepath.Join(t.TempDir(), "qr.png")
+	require.NoError(t, os.WriteFile(qr, b, 0o600))
+	// The fake tool can't rely on PATH for cat, so use its full path.
+	cat, err := exec.LookPath("cat")
+	require.NoError(t, err)
+	fakePasteTool(t, cat+" '"+qr+"'")
+
+	f := standardFake()
+	v := newTestView(t, f)
+	d := openDialog(t, v, "Add contact")
+	test.Tap(findButton(t, d, "Paste QR from clipboard"))
+
+	require.Len(t, f.AddImageCalls, 1)
+	require.Equal(t, image.Rect(0, 0, 256, 256), f.AddImageCalls[0].Bounds())
+	require.Nil(t, dialogOpen(v.win), "dialog closes on success")
+}
+
+func TestAddDialogOpenQRImageOpensFileDialog(t *testing.T) {
+	f := standardFake()
+	v := newTestView(t, f)
+	d := openDialog(t, v, "Add contact")
+	test.Tap(findButton(t, d, "Open QR image…"))
+	top := dialogOpen(v.win)
+	require.NotNil(t, top)
+	require.NotSame(t, d, top, "file dialog opens over the add dialog")
+}
+
+func TestAddFromImageFileDecodesAndAdds(t *testing.T) {
+	b, err := identity.CardQRPNG("twocan:abcdefgh", 256)
+	require.NoError(t, err)
+	f := standardFake()
+	require.NoError(t, addFromImageFile(f, bytes.NewReader(b)))
+	require.Len(t, f.AddImageCalls, 1)
+
+	require.Error(t, addFromImageFile(f, strings.NewReader("not an image")))
+	require.Len(t, f.AddImageCalls, 1, "undecodable file never reaches the core")
 }
 
 func TestFirstRunRejectsBlankName(t *testing.T) {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"image"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +41,7 @@ type fakeAPI struct {
 	contacts []core.ContactView
 	sent     []sentMsg
 	addErr   error
+	images   []image.Image // AddContactFromImage calls
 	events   chan any
 }
 
@@ -56,15 +59,20 @@ func (f *fakeAPI) sentCopy() []sentMsg {
 	return append([]sentMsg(nil), f.sent...)
 }
 
-func (f *fakeAPI) PeerID() peer.ID                                        { return "" }
-func (f *fakeAPI) DisplayName() string                                    { return "me" }
-func (f *fakeAPI) SetDisplayName(string) error                            { return nil }
-func (f *fakeAPI) MyCard() (string, error)                                { return "twocan:abc", nil }
-func (f *fakeAPI) AddContact(context.Context, string) error               { return f.addErr }
-func (f *fakeAPI) AddContactFromImage(context.Context, image.Image) error { return nil }
-func (f *fakeAPI) AcceptContact(context.Context, peer.ID) error           { return nil }
-func (f *fakeAPI) RejectContact(context.Context, peer.ID) error           { return nil }
-func (f *fakeAPI) RenameContact(context.Context, peer.ID, string) error   { return nil }
+func (f *fakeAPI) PeerID() peer.ID                          { return "" }
+func (f *fakeAPI) DisplayName() string                      { return "me" }
+func (f *fakeAPI) SetDisplayName(string) error              { return nil }
+func (f *fakeAPI) MyCard() (string, error)                  { return "twocan:abc", nil }
+func (f *fakeAPI) AddContact(context.Context, string) error { return f.addErr }
+func (f *fakeAPI) AddContactFromImage(_ context.Context, img image.Image) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.images = append(f.images, img)
+	return nil
+}
+func (f *fakeAPI) AcceptContact(context.Context, peer.ID) error         { return nil }
+func (f *fakeAPI) RejectContact(context.Context, peer.ID) error         { return nil }
+func (f *fakeAPI) RenameContact(context.Context, peer.ID, string) error { return nil }
 func (f *fakeAPI) Contacts(context.Context) ([]core.ContactView, error) {
 	return f.contacts, nil
 }
@@ -126,6 +134,30 @@ func TestCLIAddPrintsError(t *testing.T) {
 	f.addErr = identity.ErrDamagedCard
 	out := runScript(t, f, "/add twocan:zzz")
 	require.Contains(t, out, "error: Card is incomplete or damaged")
+}
+
+func TestCLIAddQR(t *testing.T) {
+	bob := newPeer(t)
+	card, err := identity.EncodeCard(identity.Card{PeerID: bob, DisplayName: "Bob"})
+	require.NoError(t, err)
+	b, err := identity.CardQRPNG(card, 256)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "bob card.png")
+	require.NoError(t, os.WriteFile(path, b, 0o600))
+
+	f := newFake(view(bob, "Bob"))
+	out := runScript(t, f, "/addqr "+path)
+	require.Len(t, f.images, 1)
+	require.Equal(t, image.Rect(0, 0, 256, 256), f.images[0].Bounds())
+	require.Contains(t, out, "added Bob (request pending)")
+}
+
+func TestCLIAddQRErrors(t *testing.T) {
+	f := newFake()
+	require.Contains(t, runScript(t, f, "/addqr"), "usage: /addqr <image file>")
+	missing := filepath.Join(t.TempDir(), "nope.png")
+	require.Contains(t, runScript(t, f, "/addqr "+missing), "error: ")
+	require.Empty(t, f.images)
 }
 
 func TestCLIPrintsEvents(t *testing.T) {

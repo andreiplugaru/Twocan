@@ -3,6 +3,8 @@ package core
 import (
 	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -376,4 +378,29 @@ func TestAddContactErrors(t *testing.T) {
 	require.ErrorIs(t, a.AddContact(t.Context(), own), contacts.ErrSelf)
 
 	require.Error(t, a.SetDisplayName(string(bytes.Repeat([]byte("x"), 65))))
+}
+
+// cardImage returns n's card as a QR code image.
+func cardImage(t *testing.T, n *Node) image.Image {
+	t.Helper()
+	card, err := n.MyCard()
+	require.NoError(t, err)
+	b, err := identity.CardQRPNG(card, 512)
+	require.NoError(t, err)
+	img, err := png.Decode(bytes.NewReader(b))
+	require.NoError(t, err)
+	return img
+}
+
+func TestAddContactFromImage(t *testing.T) {
+	mn := newMocknet(t)
+	a := newMockNode(t, mn, intervals{})
+	b := newMockNode(t, mn, intervals{})
+
+	require.ErrorIs(t, a.AddContactFromImage(t.Context(), image.NewGray(image.Rect(0, 0, 50, 50))),
+		identity.ErrNoQRCode)
+	require.ErrorIs(t, a.AddContactFromImage(t.Context(), cardImage(t, a)), contacts.ErrSelf)
+
+	require.NoError(t, a.AddContactFromImage(t.Context(), cardImage(t, b)))
+	require.NotEmpty(t, stateOf(a, b.PeerID()), "b is now a contact of a")
 }

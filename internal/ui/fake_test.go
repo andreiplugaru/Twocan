@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"image"
 	"time"
 
@@ -23,7 +22,7 @@ type fakeAPI struct {
 	history  map[peer.ID][]store.Message
 	reach    network.Reachability
 	sendErr  error
-	addErr   error // returned by AddContact
+	addErr   error // returned by AddContact and AddContactFromImage
 	nextID   uint32
 
 	AcceptCalls   []peer.ID
@@ -32,6 +31,7 @@ type fakeAPI struct {
 	SendCalls     []sendCall
 	SetNameCalls  []string
 	AddCalls      []string
+	AddImageCalls []image.Image
 	RenameCalls   []renameCall
 }
 
@@ -103,8 +103,9 @@ func (f *fakeAPI) AddContact(_ context.Context, card string) error {
 	f.AddCalls = append(f.AddCalls, card)
 	return f.addErr
 }
-func (f *fakeAPI) AddContactFromImage(context.Context, image.Image) error {
-	return errors.New("not in fake")
+func (f *fakeAPI) AddContactFromImage(_ context.Context, img image.Image) error {
+	f.AddImageCalls = append(f.AddImageCalls, img)
+	return f.addErr
 }
 
 func (f *fakeAPI) AcceptContact(_ context.Context, id peer.ID) error {

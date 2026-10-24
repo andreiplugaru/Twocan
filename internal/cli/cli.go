@@ -8,7 +8,11 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"image"
+	_ "image/jpeg" // image.Decode reads JPEG
+	_ "image/png"  // and PNG
 	"io"
+	"os"
 	"strings"
 	"sync"
 
@@ -28,6 +32,7 @@ const maxLine = 64 * 1024
 const helpText = `commands:
   /card                       print your contact card
   /add <card>                 add a contact from their card
+  /addqr <image file>         add a contact from a QR code image (PNG/JPEG)
   /accept <who>               accept a pending request
   /reject <who>               reject (block) a contact
   /rename <who> <nickname>    set a local nickname
@@ -142,6 +147,8 @@ func (c *client) handle(line string) (quit bool) {
 		c.result(err, func() { c.say("%s", card) })
 	case "/add":
 		c.cmdAdd(rest)
+	case "/addqr":
+		c.cmdAddQR(rest)
 	case "/accept":
 		c.withContact(rest, "/accept <who>", func(v core.ContactView, _ string) error {
 			return c.api.AcceptContact(c.ctx, v.PeerID)
@@ -190,15 +197,51 @@ func (c *client) cmdAdd(card string) {
 	}
 	// The new contact is the one we just added; find it by decoding the card
 	// again, so the output names them.
+	dec, err := identity.DecodeCard(card)
+	c.sayAdded(dec, err)
+}
+
+func (c *client) cmdAddQR(path string) {
+	if path == "" {
+		c.say("usage: /addqr <image file>")
+		return
+	}
+	img, err := decodeImageFile(path)
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	if err := c.api.AddContactFromImage(c.ctx, img); err != nil {
+		c.fail(err)
+		return
+	}
+	dec, err := identity.DecodeCardQR(img)
+	c.sayAdded(dec, err)
+}
+
+// decodeImageFile reads a PNG or JPEG image from path.
+func decodeImageFile(path string) (image.Image, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return img, nil
+}
+
+// sayAdded reports a contact just added from card dec, naming them as our
+// contact list does. decErr is the error from decoding the card again; on
+// error the contact is not named.
+func (c *client) sayAdded(dec identity.Card, decErr error) {
 	name := "contact"
-	if dec, err := identity.DecodeCard(card); err == nil {
+	if decErr == nil {
 		name = dec.PeerID.String()
-		if vs, err := c.api.Contacts(c.ctx); err == nil {
-			for _, v := range vs {
-				if v.PeerID == dec.PeerID {
-					name = v.Name()
-				}
-			}
+		if v, ok := c.lookup(dec.PeerID); ok {
+			name = v.Name()
 		}
 	}
 	c.say("added %s (request pending)", name)

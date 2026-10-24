@@ -336,9 +336,15 @@ func (n *Node) AddContact(ctx context.Context, cardText string) error {
 	return n.contacts.Add(ctx, card)
 }
 
-// AddContactFromImage will read a card from a QR code image (Task 15).
-func (n *Node) AddContactFromImage(context.Context, image.Image) error {
-	return errors.New("not implemented")
+// AddContactFromImage adds the peer on the card in a QR code somewhere in
+// img. It returns identity.ErrNoQRCode if there is no readable code, and
+// the same errors as AddContact otherwise.
+func (n *Node) AddContactFromImage(ctx context.Context, img image.Image) error {
+	card, err := identity.DecodeCardQR(img)
+	if err != nil {
+		return err
+	}
+	return n.contacts.Add(ctx, card)
 }
 
 // AcceptContact accepts a pending incoming request.
