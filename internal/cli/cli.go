@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -16,9 +15,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"twocan/internal/chat"
-	"twocan/internal/contacts"
 	"twocan/internal/core"
+	"twocan/internal/errtext"
 	"twocan/internal/event"
 	"twocan/internal/identity"
 	"twocan/internal/store"
@@ -40,34 +38,6 @@ const helpText = `commands:
   /status                     your peer ID and reachability
   /quit                       exit`
 
-// friendlyErrors maps known errors to the text shown to the user.
-var friendlyErrors = []struct {
-	err  error
-	text string
-}{
-	{identity.ErrDamagedCard, "card is incomplete or damaged"},
-	{identity.ErrNotACard, "that is not a Twocan contact card"},
-	{identity.ErrUnsupportedVersion, "this card needs a newer version of Twocan"},
-	{contacts.ErrSelf, "you cannot add yourself"},
-	{contacts.ErrNotPending, "there is no pending request from this contact"},
-	{chat.ErrEmpty, "message is empty"},
-	{chat.ErrTooLong, "message is too long (max 16 KiB)"},
-	{chat.ErrNotContact, "not an accepted contact"},
-	{chat.ErrInvalidUTF8, "message is not valid UTF-8"},
-	{core.ErrNameTooLong, "name is too long (max 64 characters)"},
-}
-
-// errText returns the user-facing text for err. Unknown errors print as is;
-// none of them carry message text.
-func errText(err error) string {
-	for _, f := range friendlyErrors {
-		if errors.Is(err, f.err) {
-			return f.text
-		}
-	}
-	return err.Error()
-}
-
 // client holds one running CLI session.
 type client struct {
 	api core.API
@@ -85,7 +55,7 @@ func (c *client) say(format string, args ...any) {
 	_, _ = io.WriteString(c.out, line)
 }
 
-func (c *client) fail(err error) { c.say("error: %s", errText(err)) }
+func (c *client) fail(err error) { c.say("error: %s", errtext.FriendlyError(err)) }
 
 // Run reads commands from in until /quit, end of input or ctx is done, and
 // prints events from api as they happen. It does not stop api.

@@ -125,7 +125,7 @@ func TestCLIAddPrintsError(t *testing.T) {
 	f := newFake()
 	f.addErr = identity.ErrDamagedCard
 	out := runScript(t, f, "/add twocan:zzz")
-	require.Contains(t, out, "card is incomplete or damaged")
+	require.Contains(t, out, "error: Card is incomplete or damaged")
 }
 
 func TestCLIPrintsEvents(t *testing.T) {
