@@ -11,6 +11,7 @@ import (
 
 	"twocan/internal/core"
 	"twocan/internal/event"
+	"twocan/internal/p2p"
 	"twocan/internal/store"
 )
 
@@ -22,6 +23,9 @@ type fakeAPI struct {
 	history  map[peer.ID][]store.Message
 	reach    network.Reachability
 	sendErr  error
+	details  core.ContactDetails
+	check    p2p.CheckResult
+	checkErr error
 	addErr   error // returned by AddContact and AddContactFromImage
 	nextID   uint32
 
@@ -156,4 +160,22 @@ func (f *fakeAPI) Subscribe() (<-chan any, func()) {
 }
 
 func (f *fakeAPI) Reachability() network.Reachability { return f.reach }
-func (f *fakeAPI) Stop() error                        { return nil }
+
+func (f *fakeAPI) ContactDetails(_ context.Context, id peer.ID) (core.ContactDetails, error) {
+	d := f.details
+	if c := f.contact(id); c != nil {
+		d.Contact = c.Contact
+	}
+	return d, nil
+}
+
+func (f *fakeAPI) Ping(context.Context, peer.ID) (time.Duration, error) { return time.Millisecond, nil }
+
+func (f *fakeAPI) CheckConnection(_ context.Context, _ peer.ID, report func(int, p2p.Step)) (p2p.CheckResult, error) {
+	for i, s := range f.check.Steps {
+		report(i, p2p.Step{Title: s.Title, Status: p2p.StepRunning})
+		report(i, s)
+	}
+	return f.check, f.checkErr
+}
+func (f *fakeAPI) Stop() error { return nil }

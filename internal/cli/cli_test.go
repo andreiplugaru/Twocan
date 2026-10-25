@@ -14,12 +14,14 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/require"
 
 	"twocan/internal/core"
 	"twocan/internal/event"
 	"twocan/internal/identity"
 	"twocan/internal/imgtest"
+	"twocan/internal/p2p"
 	"twocan/internal/store"
 )
 
@@ -44,6 +46,9 @@ type fakeAPI struct {
 	addErr   error
 	images   []image.Image // AddContactFromImage calls
 	events   chan any
+	details  core.ContactDetails
+	check    p2p.CheckResult
+	pings    int
 }
 
 func newFake(cs ...core.ContactView) *fakeAPI {
@@ -88,6 +93,22 @@ func (f *fakeAPI) MarkRead(context.Context, peer.ID) error                   { r
 func (f *fakeAPI) Subscribe() (<-chan any, func())                           { return f.events, func() {} }
 func (f *fakeAPI) Reachability() network.Reachability                        { return network.ReachabilityUnknown }
 func (f *fakeAPI) Stop() error                                               { return nil }
+func (f *fakeAPI) ContactDetails(context.Context, peer.ID) (core.ContactDetails, error) {
+	return f.details, nil
+}
+func (f *fakeAPI) Ping(context.Context, peer.ID) (time.Duration, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pings++
+	return time.Millisecond, nil
+}
+func (f *fakeAPI) CheckConnection(_ context.Context, _ peer.ID, report func(int, p2p.Step)) (p2p.CheckResult, error) {
+	for i, s := range f.check.Steps {
+		report(i, p2p.Step{Title: s.Title, Status: p2p.StepRunning})
+		report(i, s)
+	}
+	return f.check, nil
+}
 
 // safeBuf is a goroutine-safe output buffer.
 type safeBuf struct {
@@ -182,4 +203,40 @@ func TestCLIPrintsEvents(t *testing.T) {
 func TestCLIUnknownCommand(t *testing.T) {
 	out := runScript(t, newFake(), "/nope")
 	require.Contains(t, out, "unknown command, try /help")
+}
+
+func TestCLIInfo(t *testing.T) {
+	ann := newPeer(t)
+	v := view(ann, "Ann")
+	v.Connected = true
+	f := newFake(v)
+	f.details = core.ContactDetails{
+		Contact: store.Contact{Addrs: []ma.Multiaddr{
+			ma.StringCast("/ip4/192.168.1.5/tcp/1"), ma.StringCast("/ip4/192.168.1.5/udp/2/quic-v1"),
+		}},
+		Conns: []p2p.Conn{{Remote: ma.StringCast("/ip4/192.168.1.5/tcp/1"), Transport: "TCP/IPv4", Opened: time.Now(), Source: p2p.SourceMDNS}},
+	}
+	out := runScript(t, f, "/info an")
+	require.Equal(t, 1, f.pings, "a connected contact is pinged first")
+	require.Contains(t, out, "Ann ("+ann.String()+")\n")
+	require.Contains(t, out, "  Status: Connected directly\n")
+	require.Contains(t, out, "  Found via: your local network (mDNS)\n")
+	require.Contains(t, out, "  Saved addresses: /ip4/192.168.1.5/tcp/1\n    /ip4/192.168.1.5/udp/2/quic-v1\n")
+
+	require.Contains(t, runScript(t, f, "/info"), "usage: /info <who>")
+}
+
+func TestCLICheckPrintsFinishedStepsAndVerdict(t *testing.T) {
+	f := newFake(view(newPeer(t), "Ann"))
+	f.check = p2p.CheckResult{
+		Steps: []p2p.Step{
+			{Title: "Helper", Status: p2p.StepOK, Detail: "Connected to the helper."},
+			{Title: "Direct connection", Status: p2p.StepFail, Detail: "No answer."},
+		},
+		Verdict: "Couldn't connect.",
+	}
+	out := runScript(t, f, "/check ann")
+	require.Contains(t, out, "checking the connection to Ann")
+	require.Contains(t, out, "  ✓ Helper: Connected to the helper.\n  ✗ Direct connection: No answer.\nverdict: Couldn't connect.\n")
+	require.NotContains(t, out, "… Helper", "running steps are not printed")
 }

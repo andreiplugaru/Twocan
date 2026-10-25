@@ -100,6 +100,7 @@ func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 	connected, relayed := n.connInfo(id)
 	// Log before publishing, so the log line precedes anything the event triggers.
 	if !connected {
+		n.noteDisconnected(id)
 		n.log.Info("contact disconnected", "peer", id)
 		n.bus.Publish(event.Connectivity{Peer: id})
 		return
@@ -108,6 +109,7 @@ func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 	for _, conn := range n.h.Network().ConnsToPeer(id) {
 		remotes = append(remotes, conn.RemoteMultiaddr())
 	}
+	n.noteConnected(id)
 	n.log.Info("contact connected", "peer", id, "relayed", relayed, "remote", addrStrings(remotes))
 	n.bus.Publish(event.Connectivity{Peer: id, Connected: true, Relayed: relayed})
 	if c.State != store.StateBlocked {
@@ -198,6 +200,9 @@ func (n *Node) flushPeer(ctx context.Context, id peer.ID, gen uint64) {
 		// Reset while we ran (connect or contact change): our result is
 		// stale, so retry on the next tick without penalty.
 	case err != nil:
+		if ctx.Err() == nil {
+			n.noteProblemLocked(id, err)
+		}
 		ps.delay = nextBackoff(ps.delay)
 		ps.due = time.Now().Add(ps.delay)
 		n.log.Info("send failed; will retry", "peer", id, "retry_in", ps.delay, "err", err)
@@ -239,6 +244,9 @@ func (n *Node) unparkAll() {
 // sweepPresence reaches every accepted contact we are not connected to; a
 // resulting connection triggers onConnectedness.
 func (n *Node) sweepPresence(ctx context.Context) {
+	n.mu.Lock()
+	n.nextSweep = time.Now().Add(n.iv.presence)
+	n.mu.Unlock()
 	cs, err := n.st.ListContacts(ctx)
 	if err != nil {
 		return
@@ -255,7 +263,11 @@ func (n *Node) sweepPresence(ctx context.Context) {
 		n.loops.Go(func(ctx context.Context) {
 			ctx, cancel := context.WithTimeout(ctx, n.iv.presence)
 			defer cancel()
-			_ = n.r.Reach(ctx, id)
+			if err := n.r.Reach(ctx, id); err != nil && ctx.Err() == nil {
+				n.mu.Lock()
+				n.noteProblemLocked(id, err)
+				n.mu.Unlock()
+			}
 		})
 	}
 }

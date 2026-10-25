@@ -71,6 +71,26 @@ People on different home networks need the helper server so they can find each o
    - bake them into the binaries so no flag is needed: set the `TWOCAN_BOOTSTRAP` repository variable and cut a release (see [Releases](#releases)), or build locally with `-ldflags "-X twocan/internal/p2p.bootstrapAddrs=<addr1>,<addr2>"`.
 3. Add each other with your cards as above. The status bar shows whether you're reachable and whether the open conversation is **direct** or **via relay**.
 
+## When a contact won't connect
+
+Select the contact and click **Details** above the conversation (or run `/info <who>` and `/check <who>` in `twocan-cli`). The window shows:
+
+- **How you're connected:** direct or through the relay, over TCP or QUIC, who dialled whom, and the latency.
+- **How you found each other:** on your local network (mDNS), through the helper, from an address you already had, or they connected to you. A connection can also come from hole punching (upgraded from the relay).
+- **When it goes wrong:** when they were last seen, the last problem in plain words, when Twocan tries again, and the addresses it will try after a restart.
+
+**Check connection** then tries every way of reaching them, one step at a time:
+
+1. the helper;
+2. your reachability;
+3. your relay slot;
+4. whether the helper knows them;
+5. a direct dial;
+6. a dial through the helper's relay;
+7. a hole punch.
+
+It ends with a one-line verdict. **Copy results** puts the whole report on the clipboard, ready to paste into a bug report. Successful dials stay connected. "Last seen" and "last problem" cover the current session only.
+
 ## Command-line client
 
 ```bash
@@ -89,6 +109,8 @@ bin/twocan-cli --data-dir /tmp/ben --name Ben  # a second identity on the same m
 | `/msg <who> <text>` | Send a message |
 | `/history <who>` | Show the conversation |
 | `/stats <who>` | Message counts (in, out, pending) |
+| `/info <who>` | Connection details: how you're connected and found each other, last problem, saved addresses |
+| `/check <who>` | Check step by step whether and how they can be reached |
 | `/status` | Your peer ID and reachability |
 | `/help`, `/quit` | |
 

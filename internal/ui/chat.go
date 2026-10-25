@@ -21,6 +21,12 @@ const bubbleWidth = 0.75
 func (v *MainView) buildChat() {
 	v.peerName = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	v.peerName.Truncation = fyne.TextTruncateEllipsis
+	v.detailsBtn = widget.NewButton("Details", func() {
+		if c, ok := v.selectedContact(); ok && v.showDetails != nil {
+			v.showDetails(c.PeerID, c.Name())
+		}
+	})
+	v.detailsBtn.Hide()
 	v.drafts = make(map[peer.ID]string)
 	v.convo = widget.NewList(
 		func() int { return len(v.msgs) },
@@ -99,13 +105,16 @@ func (v *MainView) indexOfMsg(id []byte, dir store.Direction) int {
 	return -1
 }
 
-// updateHeader shows the selected contact's name above the conversation.
+// updateHeader shows the selected contact's name above the conversation,
+// with the Details button next to it.
 func (v *MainView) updateHeader() {
 	name := ""
-	if c, ok := v.selectedContact(); ok {
+	c, ok := v.selectedContact()
+	if ok {
 		name = c.Name()
 	}
 	v.peerName.SetText(name)
+	showIf(v.detailsBtn, ok)
 }
 
 // updateEntry enables the entry and Send only for an accepted contact.

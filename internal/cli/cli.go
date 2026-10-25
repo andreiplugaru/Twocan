@@ -13,14 +13,17 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"twocan/internal/core"
+	"twocan/internal/diagtext"
 	"twocan/internal/errtext"
 	"twocan/internal/event"
 	"twocan/internal/identity"
+	"twocan/internal/p2p"
 	"twocan/internal/store"
 )
 
@@ -38,6 +41,8 @@ const helpText = `commands:
   /msg <who> <text>           send a message
   /history <who>              show the conversation
   /stats <who>                in/out/pending message counts
+  /info <who>                 connection details: how you're connected, last problem, saved addresses
+  /check <who>                check step by step whether and how they can be reached
   /status                     your peer ID and reachability
   /quit                       exit`
 
@@ -167,6 +172,10 @@ func (c *client) handle(line string) (quit bool) {
 		c.cmdHistory(rest)
 	case "/stats":
 		c.cmdStats(rest)
+	case "/info":
+		c.cmdInfo(rest)
+	case "/check":
+		c.cmdCheck(rest)
 	case "/status":
 		c.say("peer=%s reachability=%s", c.api.PeerID(), reachText(c.api.Reachability()))
 	default:
@@ -384,6 +393,57 @@ func (c *client) cmdStats(who string) {
 		}
 	}
 	c.say("in=%d out=%d pending=%d", in, out, pending)
+}
+
+func (c *client) cmdInfo(who string) {
+	if who == "" {
+		c.say("usage: /info <who>")
+		return
+	}
+	v, err := c.resolve(who)
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	if v.Connected {
+		_, _ = c.api.Ping(c.ctx, v.PeerID) // refreshes the latency; best effort
+	}
+	d, err := c.api.ContactDetails(c.ctx, v.PeerID)
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	c.say("%s (%s)", v.Name(), v.PeerID)
+	for _, f := range diagtext.Details(d, time.Now()) {
+		lines := strings.Split(f.Value, "\n")
+		c.say("  %s: %s", f.Label, lines[0])
+		for _, l := range lines[1:] {
+			c.say("    %s", l)
+		}
+	}
+}
+
+func (c *client) cmdCheck(who string) {
+	if who == "" {
+		c.say("usage: /check <who>")
+		return
+	}
+	v, err := c.resolve(who)
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	c.say("checking the connection to %s (this can take a minute)…", v.Name())
+	res, err := c.api.CheckConnection(c.ctx, v.PeerID, func(_ int, s p2p.Step) {
+		if s.Status != p2p.StepRunning {
+			c.say("  %s", diagtext.StepLine(s))
+		}
+	})
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	c.say("verdict: %s", res.Verdict)
 }
 
 // printEvent shows one asynchronous event.

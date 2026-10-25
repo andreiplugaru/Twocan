@@ -22,6 +22,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
+	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	ma "github.com/multiformats/go-multiaddr"
 
 	"twocan/internal/logging"
@@ -74,6 +75,10 @@ type Node struct {
 	reach atomic.Int32 // network.Reachability
 	log   *slog.Logger
 
+	boot      []peer.AddrInfo // the helpers
+	origins   *origins
+	punchWait time.Duration // Check's wait for a hole punch (0: default; tests shorten it)
+
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	closeOnce sync.Once
@@ -94,13 +99,13 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	if log == nil {
 		log = logging.Discard()
 	}
-	n := &Node{log: log.With("component", "p2p")}
+	n := &Node{log: log.With("component", "p2p"), boot: cfg.Bootstrap, origins: newOrigins()}
 	n.reach.Store(int32(network.ReachabilityUnknown))
 
 	opts := []libp2p.Option{
 		libp2p.Identity(cfg.PrivKey),
 		libp2p.NATPortMap(),
-		libp2p.EnableHolePunching(),
+		libp2p.EnableHolePunching(holepunch.WithTracer(n.origins)),
 		libp2p.ConnectionManager(cm),
 		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
 			d, err := newDHT(h, cfg.Bootstrap)
@@ -144,7 +149,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 
 	if cfg.EnableMDNS {
-		n.mdns = mdns.NewMdnsService(h, MDNSService, mdnsNotifee{h: h, log: n.log})
+		n.mdns = mdns.NewMdnsService(h, MDNSService, mdnsNotifee{h: h, log: n.log, origins: n.origins})
 		if err := n.mdns.Start(); err != nil {
 			_ = sub.Close()
 			_ = n.dht.Close()
@@ -219,6 +224,7 @@ func (n *Node) Reach(ctx context.Context, id peer.ID) error {
 	info, err := n.dht.FindPeer(ctx, id)
 	if err == nil {
 		n.log.Info("dht found peer", "peer", id, "addrs", addrStrings(info.Addrs))
+		n.origins.addHelper(id, info.Addrs)
 		if err = n.connect(ctx, info); err == nil {
 			n.log.Info("reached peer", "peer", id, "via", "dht", "took", time.Since(start).Round(time.Millisecond))
 			return nil
@@ -242,7 +248,7 @@ func (n *Node) ConnInfo(id peer.ID) (connected, relayed bool) {
 		return false, false
 	}
 	for _, c := range conns {
-		if _, err := c.RemoteMultiaddr().ValueForProtocol(ma.P_CIRCUIT); err != nil {
+		if !isCircuit(c.RemoteMultiaddr()) {
 			return true, false
 		}
 	}
@@ -299,8 +305,9 @@ func (n *Node) bootstrap(ctx context.Context, peers []peer.AddrInfo) {
 
 // mdnsNotifee records peers found on the local network; it does not dial.
 type mdnsNotifee struct {
-	h   host.Host
-	log *slog.Logger
+	h       host.Host
+	log     *slog.Logger
+	origins *origins
 }
 
 func (m mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
@@ -308,6 +315,7 @@ func (m mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 		return
 	}
 	m.log.Info("mdns found peer", "peer", pi.ID, "addrs", addrStrings(pi.Addrs))
+	m.origins.addMDNS(pi.ID, pi.Addrs)
 	m.h.Peerstore().AddAddrs(pi.ID, pi.Addrs, peerstore.TempAddrTTL)
 }
 
