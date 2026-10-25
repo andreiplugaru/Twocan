@@ -46,3 +46,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --title "Twocan $GITHUB_REF_NAME" --generate-notes
+
+  # Installs the new helper on the VPS, if VPS_HOST is set. The deploy key
+  # can only run deploy/twocan-helper-update there (see the README).
+  deploy-helper:
+    needs: release
+    if: vars.VPS_HOST != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy the helper to the VPS
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519
+          ssh deploy@"$VPS_HOST" "$GITHUB_REF_NAME"

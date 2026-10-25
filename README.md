@@ -141,6 +141,31 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs vet, the race-e
    ```
    [`.github/workflows/release.yml`](.github/workflows/release.yml) reruns the full test suite. It then builds the binaries listed under [Download](#download) with the helper addresses baked in, and publishes them as a GitHub release with generated notes.
 
+### Deploying the helper automatically
+
+When the `VPS_HOST` variable is set, each release also updates the helper on your VPS. The workflow connects over SSH with a key that can do only one thing: run [`deploy/twocan-helper-update`](deploy/twocan-helper-update) with the new tag. That script downloads the release's helper binary, checks it against `SHA256SUMS` and restarts the service. The helper's key in `/var/lib/twocan-helper/` is never touched, so its peer ID and the bootstrap addresses stay the same.
+
+**On the VPS** (the helper already runs as the `twocan-helper` systemd service):
+```bash
+sudo apt install -y curl jq
+sudo useradd --system --create-home --shell /bin/sh deploy
+sudo install -m 755 -o root -g root twocan-helper-update /usr/local/bin/twocan-helper-update
+echo 'deploy ALL=(root) NOPASSWD: /usr/local/bin/twocan-helper-update' | sudo tee /etc/sudoers.d/twocan-deploy
+sudo chmod 440 /etc/sudoers.d/twocan-deploy
+```
+Make a key pair with `ssh-keygen -t ed25519 -N "" -f twocan-deploy -C github-deploy`. Put this line in `/home/deploy/.ssh/authorized_keys` (directory 700, file 600, both owned by `deploy`), followed by the contents of `twocan-deploy.pub`:
+```
+command="sudo /usr/local/bin/twocan-helper-update \"$SSH_ORIGINAL_COMMAND\"",restrict
+```
+While the repository is private, the script needs a fine-grained GitHub token with read-only *Contents* access to this repository. Store it as `Authorization: Bearer <token>` in `/etc/twocan-helper-update.token` (mode 600, owned by root). Delete that file once the repository is public.
+
+**In GitHub**, under *Settings → Secrets and variables → Actions*:
+- secret `VPS_SSH_KEY`: the private key file `twocan-deploy`;
+- secret `VPS_KNOWN_HOSTS`: the output of `ssh-keyscan -t ed25519 <vps>`;
+- variable `VPS_HOST`: the VPS address.
+
+Test with `ssh -i twocan-deploy deploy@<vps> v0.1.0`, using a tag that has a release.
+
 Design: [`docs/superpowers/specs/2026-10-23-twocan-design.md`](docs/superpowers/specs/2026-10-23-twocan-design.md). Plan: [`docs/superpowers/plans/2026-10-23-twocan-v1.md`](docs/superpowers/plans/2026-10-23-twocan-v1.md).
 
 ## Not in v1
