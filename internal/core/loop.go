@@ -261,9 +261,10 @@ func (n *Node) sweepPresence(ctx context.Context) {
 		n.log.Debug("checking on offline contact", "peer", c.PeerID)
 		id := c.PeerID
 		n.loops.Go(func(ctx context.Context) {
-			ctx, cancel := context.WithTimeout(ctx, n.iv.presence)
+			rctx, cancel := context.WithTimeout(ctx, n.iv.presence)
 			defer cancel()
-			if err := n.r.Reach(ctx, id); err != nil && ctx.Err() == nil {
+			// Only shutting down (ctx done) is not a problem worth showing.
+			if err := n.r.Reach(rctx, id); err != nil && ctx.Err() == nil {
 				n.mu.Lock()
 				n.noteProblemLocked(id, err)
 				n.mu.Unlock()

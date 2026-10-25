@@ -118,7 +118,10 @@ func TestChatThroughRelay(t *testing.T) {
 	require.Positive(t, reports)
 	require.True(t, res.Relayed)
 	require.Contains(t, res.Verdict, "Connected through the helper's relay")
+	statusOf := map[string]p2p.StepStatus{}
 	for _, s := range res.Steps {
-		require.NotEqual(t, p2p.StepFail, s.Status, "%s: %s", s.Title, s.Detail)
+		statusOf[s.Title] = s.Status
 	}
+	require.Equal(t, p2p.StepOK, statusOf["Helper"])
+	require.Equal(t, p2p.StepOK, statusOf["Relay connection"])
 }

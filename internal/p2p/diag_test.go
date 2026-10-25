@@ -10,6 +10,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/routing"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/require"
@@ -29,6 +30,9 @@ func TestExplain(t *testing.T) {
 		{errors.New("dial udp: connect: network is unreachable"), "no route to their addresses"},
 		{errors.New("no good addresses"), "No usable address"},
 		{errors.New("all dials failed\n  * [/ip4/1.2.3.4/tcp/1] dial backoff"), "failed moments ago"},
+		{errors.New("error opening relay circuit: CONNECTION_FAILED (203)"), "couldn't pass the connection on"},
+		{errors.New("error opening relay circuit: RESOURCE_LIMIT_EXCEEDED (201)"), "at its limit"},
+		{errors.New("error opening relay circuit: PERMISSION_DENIED (202)"), "refused to relay"},
 		{errors.New("something else"), "something else"},
 	} {
 		require.Contains(t, Explain(tc.err), tc.want, "%v", tc.err)
@@ -170,7 +174,7 @@ func TestCheckUnreachableWithoutHelper(t *testing.T) {
 	res, _ := checkWithReports(t.Context(), a, ghost)
 	require.Equal(t, StepFail, res.Steps[stepDirect].Status)
 	require.Contains(t, res.Steps[stepDirect].Detail, "refused the connection")
-	require.Contains(t, res.Steps[stepDirect].Detail, "Tried 1 addresses.")
+	require.Contains(t, res.Steps[stepDirect].Detail, "Tried 1 address.")
 	require.False(t, res.Connected)
 	require.Contains(t, res.Verdict, "no helper is configured")
 }
@@ -203,6 +207,7 @@ func TestCheckCancelled(t *testing.T) {
 		require.Equal(t, StepSkipped, s.Status)
 		require.Equal(t, "Cancelled.", s.Detail)
 	}
+	require.Equal(t, "Cancelled.", res.Verdict)
 }
 
 // newTestRelay starts a relay that is not a DHT server, like a helper whose
@@ -289,4 +294,53 @@ func TestCheckReportsMissingRelaySlot(t *testing.T) {
 	require.Contains(t, res.Steps[stepRelay].Detail, "They have no relay slot")
 	require.False(t, res.Connected)
 	require.Contains(t, res.Verdict, "holds no relay slot for them")
+}
+
+func TestOnlyBackoff(t *testing.T) {
+	require.True(t, OnlyBackoff(errors.New("all dials failed\n  * [/ip4/1.2.3.4/tcp/1] dial backoff")))
+	require.False(t, OnlyBackoff(errors.New("all dials failed\n  * [/ip4/1.2.3.4/tcp/1] dial backoff\n  * [/ip4/1.2.3.4/tcp/2] connection refused")))
+	require.False(t, OnlyBackoff(nil))
+}
+
+// The direct addrs' "dial backoff" must not hide why the relay dial failed.
+func TestCircuitCause(t *testing.T) {
+	circuit := ma.StringCast("/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWHxukoUg4QZmSWciogRpYmRaoaQi8PPxE4JG8TUmtw5Zf/p2p-circuit")
+	err := fmt.Errorf("failed to dial: %w", &swarm.DialError{DialErrors: []swarm.TransportError{
+		{Address: ma.StringCast("/ip4/1.2.3.4/tcp/5"), Cause: errors.New("dial backoff")},
+		{Address: circuit, Cause: errors.New("error opening hop stream to relay: protocols not supported")},
+	}})
+	require.Equal(t, explainedBackoff, Explain(err), "the whole error reads as a backoff")
+	require.Equal(t, "error opening hop stream to relay: protocols not supported", Explain(circuitCause(err)))
+
+	plain := errors.New("x")
+	require.Equal(t, plain, circuitCause(plain))
+	noCircuit := &swarm.DialError{DialErrors: []swarm.TransportError{{Address: ma.StringCast("/ip4/1.2.3.4/tcp/5"), Cause: plain}}}
+	require.Equal(t, error(noCircuit), circuitCause(noCircuit))
+}
+
+func TestPunchOutcome(t *testing.T) {
+	opened := time.Now().Add(-time.Minute)
+	type want struct {
+		status StepStatus
+		done   bool
+	}
+	for name, tc := range map[string]struct {
+		now     time.Time
+		hp      HolePunch
+		punched bool
+		direct  bool
+		want    want
+	}{
+		"direct connection":                {now: opened.Add(time.Second), direct: true, want: want{StepOK, true}},
+		"just opened, nothing yet":         {now: opened.Add(time.Second), want: want{0, false}},
+		"nothing attempted after grace":    {now: opened.Add(punchStartGrace + time.Second), want: want{StepWarn, true}},
+		"older punch is for another conn":  {now: opened.Add(punchStartGrace + time.Second), punched: true, hp: HolePunch{At: opened.Add(-time.Hour)}, want: want{StepWarn, true}},
+		"failed attempt, retries may come": {now: opened.Add(3 * time.Second), punched: true, hp: HolePunch{At: opened.Add(2 * time.Second), Err: "x"}, want: want{0, false}},
+		"failed and quiet since":           {now: opened.Add(2*time.Second + punchQuiet + time.Second), punched: true, hp: HolePunch{At: opened.Add(2 * time.Second), Err: "x"}, want: want{StepFail, true}},
+		"succeeded, direct conn not seen":  {now: opened.Add(punchStartGrace + time.Minute), punched: true, hp: HolePunch{At: opened.Add(2 * time.Second), OK: true}, want: want{0, false}},
+	} {
+		status, detail, done := punchOutcome(tc.now, opened, tc.hp, tc.punched, tc.direct)
+		require.Equal(t, tc.want, want{status, done}, name)
+		require.Equal(t, done, detail != "", name)
+	}
 }

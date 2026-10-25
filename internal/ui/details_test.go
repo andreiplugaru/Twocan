@@ -105,3 +105,17 @@ func TestDetailsCheckError(t *testing.T) {
 	require.Equal(t, "boom", dv.verdict.Text)
 	require.True(t, dv.copy.Disabled())
 }
+
+// Refreshing with the same fields keeps the labels, so selected text stays.
+func TestDetailsRefreshKeepsLabels(t *testing.T) {
+	f := standardFake()
+	dv := newTestDetails(t, f)
+	before := append([]fyne.CanvasObject(nil), dv.fields.Objects...)
+	dv.refresh()
+	require.Equal(t, before, dv.fields.Objects)
+
+	f.details.LastProblem = "No answer."
+	dv.refresh()
+	require.NotEqual(t, len(before), len(dv.fields.Objects), "a new field rebuilds the list")
+	require.Contains(t, labelTexts(dv.fields), "No answer. (at 00:00:00)")
+}

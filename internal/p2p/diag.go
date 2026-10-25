@@ -243,6 +243,14 @@ func transportName(a ma.Multiaddr) string {
 	return tr + "/" + ip
 }
 
+// explainedBackoff is Explain's text for a dial skipped because an earlier
+// one failed moments ago.
+const explainedBackoff = "A dial to them failed moments ago; Twocan waits a little before trying again."
+
+// OnlyBackoff reports whether err says nothing more than that dials are
+// backing off after an earlier failure.
+func OnlyBackoff(err error) bool { return err != nil && Explain(err) == explainedBackoff }
+
 // Explain turns an error from reaching a peer into plain words. Unknown
 // errors come back as they are.
 func Explain(err error) string {
@@ -257,6 +265,12 @@ func Explain(err error) string {
 		return "No helper is connected, so there is nobody to ask where they are."
 	case strings.Contains(s, "NO_RESERVATION"):
 		return "They have no relay slot on the helper, so the relay can't pass the connection on to them."
+	case strings.Contains(s, "CONNECTION_FAILED"):
+		return "The helper couldn't pass the connection on to them: their app may have just closed, or its relay slot is stale."
+	case strings.Contains(s, "RESOURCE_LIMIT_EXCEEDED"):
+		return "The helper's relay is at its limit right now; try again in a minute."
+	case strings.Contains(s, "PERMISSION_DENIED"):
+		return "The helper refused to relay this connection."
 	case strings.Contains(s, "no addresses") || strings.Contains(s, "no good addresses"):
 		return "No usable address is known for them."
 	case strings.Contains(s, "connection refused"):
@@ -266,7 +280,7 @@ func Explain(err error) string {
 	case strings.Contains(s, "no route to host") || strings.Contains(s, "network is unreachable"):
 		return "Your computer has no route to their addresses (for example, no IPv6)."
 	case strings.Contains(s, "dial backoff"):
-		return "A dial to them failed moments ago; Twocan waits a little before trying again."
+		return explainedBackoff
 	case errors.Is(err, context.Canceled):
 		return "Cancelled."
 	}

@@ -121,6 +121,14 @@ func (dv *detailsView) refresh() {
 }
 
 func (dv *detailsView) setFields(fs []diagtext.Field) {
+	if dv.sameLabels(fs) {
+		for i, f := range fs {
+			if value := dv.fields.Objects[2*i+1].(*widget.Label); value.Text != f.Value {
+				value.SetText(f.Value)
+			}
+		}
+		return
+	}
 	objs := make([]fyne.CanvasObject, 0, 2*len(fs))
 	for _, f := range fs {
 		label := widget.NewLabelWithStyle(f.Label, fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
@@ -131,6 +139,20 @@ func (dv *detailsView) setFields(fs []diagtext.Field) {
 	}
 	dv.fields.Objects = objs
 	dv.fields.Refresh()
+}
+
+// sameLabels reports whether the shown fields have fs's labels, in order,
+// so refreshing can update values in place and keep any selected text.
+func (dv *detailsView) sameLabels(fs []diagtext.Field) bool {
+	if len(dv.fields.Objects) != 2*len(fs) {
+		return false
+	}
+	for i, f := range fs {
+		if dv.fields.Objects[2*i].(*widget.Label).Text != f.Label {
+			return false
+		}
+	}
+	return true
 }
 
 // runCheck starts a connection check, showing each step as it goes.

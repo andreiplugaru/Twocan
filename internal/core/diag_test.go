@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -66,4 +67,42 @@ func TestCheckConnectionUnavailableOverMocknet(t *testing.T) {
 	befriend(t, a, b)
 	_, err := a.CheckConnection(t.Context(), b.PeerID(), nil)
 	require.ErrorIs(t, err, errNoDiagnostics)
+}
+
+func TestNoteProblemKeepsTheCauseOverBackoff(t *testing.T) {
+	mn := newMocknet(t)
+	a := newMockNode(t, mn, intervals{})
+	id := randomPeer(t)
+	refused := errors.New("connect: connection refused")
+	backoff := errors.New("all dials failed\n  * [/ip4/1.2.3.4/tcp/1] dial backoff")
+
+	a.mu.Lock()
+	a.noteProblemLocked(id, backoff)
+	require.Equal(t, backoff, a.health[id].problem, "a backoff is better than nothing")
+	a.noteProblemLocked(id, refused)
+	a.noteProblemLocked(id, backoff)
+	require.Equal(t, refused, a.health[id].problem, "a backoff does not hide the cause")
+	a.mu.Unlock()
+}
+
+func TestNextAttemptIsTheSoonerOfRetryAndSweep(t *testing.T) {
+	mn := newMocknet(t)
+	a := newMockNode(t, mn, intervals{})
+	id := randomPeer(t)
+	now := time.Now()
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.nextSweep = now.Add(time.Minute)
+	require.Equal(t, a.nextSweep, a.nextAttemptLocked(id, store.StateAccepted, now), "sweep only")
+	require.True(t, a.nextAttemptLocked(id, store.StatePendingOutgoing, now).IsZero(), "the sweep skips pending contacts")
+
+	a.peers[id] = &peerState{due: now.Add(10 * time.Second)}
+	require.Equal(t, now.Add(10*time.Second), a.nextAttemptLocked(id, store.StateAccepted, now), "retry before sweep")
+	a.peers[id].due = now.Add(time.Hour)
+	require.Equal(t, a.nextSweep, a.nextAttemptLocked(id, store.StateAccepted, now), "sweep before retry")
+	a.peers[id].due = now.Add(-time.Second)
+	require.Equal(t, now, a.nextAttemptLocked(id, store.StatePendingOutgoing, now), "overdue: now")
+	a.peers[id].parked = true
+	require.True(t, a.nextAttemptLocked(id, store.StatePendingOutgoing, now).IsZero(), "parked: nothing scheduled")
 }

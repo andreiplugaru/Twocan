@@ -86,9 +86,17 @@ func (n *Node) noteDisconnected(id peer.ID) {
 	n.healthOf(id).lastSeen = time.Now()
 }
 
-// noteProblemLocked records why reaching id failed. n.mu must be held.
+// noteProblemLocked records why reaching id failed, unless id is connected
+// by now or err only says an earlier failure is being backed off from (the
+// earlier cause says more). n.mu must be held.
 func (n *Node) noteProblemLocked(id peer.ID, err error) {
+	if connected, _ := n.connInfo(id); connected {
+		return
+	}
 	h := n.healthOf(id)
+	if p2p.OnlyBackoff(err) && h.problem != nil {
+		return
+	}
 	h.problem, h.problemAt = err, time.Now()
 }
 

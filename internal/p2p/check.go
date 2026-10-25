@@ -25,6 +25,12 @@ const (
 	defaultPunchWait = 20 * time.Second
 	// punchPoll is how often the check looks for that upgrade.
 	punchPoll = 250 * time.Millisecond
+	// punchQuiet is how long after a failed attempt the check waits for a
+	// retry before calling the hole punch failed: libp2p tries up to 3 times.
+	punchQuiet = 5 * time.Second
+	// punchStartGrace is how long after a relayed connection opens a hole
+	// punch may take to start.
+	punchStartGrace = 10 * time.Second
 )
 
 // StepStatus is the state of one step of a connection check.
@@ -86,7 +92,6 @@ type checker struct {
 	found     bool            // the helper knew them
 	relayErr  error           // why the relay dial failed
 	lastErr   error           // the latest dial or lookup error
-	start     time.Time
 	punchWait time.Duration
 }
 
@@ -96,7 +101,7 @@ type checker struct {
 // with each step's index as it starts and again as it ends. Successful
 // dials leave their connections open.
 func (n *Node) Check(ctx context.Context, id peer.ID, report func(int, Step)) CheckResult {
-	c := &checker{n: n, id: id, report: report, start: time.Now(), punchWait: n.punchWait}
+	c := &checker{n: n, id: id, report: report, punchWait: n.punchWait}
 	if c.punchWait == 0 {
 		c.punchWait = defaultPunchWait
 	}
@@ -118,7 +123,7 @@ func (n *Node) Check(ctx context.Context, id peer.ID, report func(int, Step)) Ch
 		c.set(i, status, detail)
 	}
 	connected, relayed := n.ConnInfo(id)
-	res := CheckResult{Steps: c.steps[:], Connected: connected, Relayed: relayed, Verdict: c.verdict(connected, relayed)}
+	res := CheckResult{Steps: c.steps[:], Connected: connected, Relayed: relayed, Verdict: c.verdict(ctx, connected, relayed)}
 	n.log.Info("connection check", "peer", id, "connected", connected, "relayed", relayed, "verdict", res.Verdict)
 	return res
 }
@@ -231,7 +236,7 @@ func (c *checker) direct(ctx context.Context) (StepStatus, string) {
 	ctx = network.WithForceDirectDial(ctx, "twocan-check")
 	if err := c.n.connect(ctx, peer.AddrInfo{ID: c.id, Addrs: addrs}); err != nil {
 		c.lastErr = err
-		return StepFail, fmt.Sprintf("%s Tried %d addresses.", Explain(err), len(addrs))
+		return StepFail, fmt.Sprintf("%s Tried %s.", Explain(err), plural(len(addrs), "address", "addresses"))
 	}
 	if conn := c.directConn(); conn != nil {
 		return StepOK, fmt.Sprintf("Connected directly (%s to %s).", transportName(conn.RemoteMultiaddr()), conn.RemoteMultiaddr())
@@ -261,6 +266,7 @@ func (c *checker) relay(ctx context.Context) (StepStatus, string) {
 	ctx, cancel := context.WithTimeout(network.WithAllowLimitedConn(ctx, "twocan-check"), relayDialTimeout)
 	defer cancel()
 	if err := c.n.host.Connect(ctx, peer.AddrInfo{ID: c.id, Addrs: addrs}); err != nil {
+		err = circuitCause(err)
 		c.relayErr, c.lastErr = err, err
 		return StepFail, Explain(err)
 	}
@@ -292,11 +298,9 @@ func (c *checker) holePunch(ctx context.Context) (StepStatus, string) {
 	tick := time.NewTicker(punchPoll)
 	defer tick.Stop()
 	for {
-		if c.directConn() != nil {
-			return StepOK, "Upgraded to a direct connection."
-		}
-		if hp, ok := c.n.origins.punch(c.id); ok && !hp.OK && hp.At.After(relayOpened) {
-			return StepFail, "Hole punching failed (" + hp.Err + "), so you stay on the relay. Both routers may be strict, or a firewall blocks it."
+		hp, punched := c.n.origins.punch(c.id)
+		if status, detail, done := punchOutcome(time.Now(), relayOpened, hp, punched, c.directConn() != nil); done {
+			return status, detail
 		}
 		select {
 		case <-ctx.Done():
@@ -306,6 +310,51 @@ func (c *checker) holePunch(ctx context.Context) (StepStatus, string) {
 		case <-tick.C:
 		}
 	}
+}
+
+// punchOutcome decides the hole punch step at now for a relayed connection
+// opened at relayOpened, given the latest hole punch (if punched) and
+// whether a direct connection exists. done is false while it is still worth
+// waiting.
+func punchOutcome(now, relayOpened time.Time, hp HolePunch, punched, direct bool) (status StepStatus, detail string, done bool) {
+	if direct {
+		return StepOK, "Upgraded to a direct connection.", true
+	}
+	tried := punched && !hp.At.Before(relayOpened)
+	switch {
+	case !tried && now.Sub(relayOpened) > punchStartGrace:
+		return StepWarn, "No hole punch was attempted on this relayed connection, so you stay on the relay. One is tried each time a relayed connection opens.", true
+	case tried && !hp.OK && now.Sub(hp.At) > punchQuiet:
+		return StepFail, "Hole punching failed (" + hp.Err + "), so you stay on the relay. Both routers may be strict, or a firewall blocks it.", true
+	}
+	return 0, "", false
+}
+
+// circuitCause picks, from a dial error, the failures of the dials through
+// a relay: the other addresses' failures (often just "dial backoff" after
+// the direct step) would hide why the relay did not work.
+func circuitCause(err error) error {
+	var de *swarm.DialError
+	if !errors.As(err, &de) {
+		return err
+	}
+	var causes []error
+	for _, te := range de.DialErrors {
+		if isCircuit(te.Address) {
+			causes = append(causes, te.Cause)
+		}
+	}
+	if len(causes) == 0 {
+		return err
+	}
+	return errors.Join(causes...)
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // clearBackoff forgets recent failed dials to id: the user asked for this
@@ -336,8 +385,10 @@ func (c *checker) hasDirectAddrs() bool {
 }
 
 // verdict sums the check up in one line.
-func (c *checker) verdict(connected, relayed bool) string {
+func (c *checker) verdict(ctx context.Context, connected, relayed bool) string {
 	switch {
+	case ctx.Err() != nil:
+		return "Cancelled."
 	case connected && !relayed && c.steps[stepPunch].Status == StepOK:
 		return "Connected: hole punching upgraded the relayed connection to a direct one."
 	case connected && !relayed:
