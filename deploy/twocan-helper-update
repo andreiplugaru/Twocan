@@ -1,0 +1,44 @@
+#!/bin/sh
+# twocan-helper-update TAG installs twocan-helper from GitHub release TAG
+# and restarts it. The release workflow runs it over SSH after each release
+# (see the README, "Deploying the helper automatically").
+#
+# While the repository is private, /etc/twocan-helper-update.token holds the
+# header line "Authorization: Bearer <read-only token>". Once it is public,
+# delete it.
+set -eu
+repo=andreiplugaru/Twocan
+hdr=/etc/twocan-helper-update.token
+
+tag="${1:-}"
+echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "bad tag: $tag" >&2; exit 1; }
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64) arch=arm64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+bin="twocan-helper-linux-$arch"
+
+# The token is read from a file (-H @file), so it never shows up in ps.
+gh_get() {
+  if [ -r "$hdr" ]; then curl -fsSL -H @"$hdr" "$@"; else curl -fsSL "$@"; fi
+}
+asset() { # asset NAME: downloads a release asset to ./NAME
+  url=$(jq -r --arg n "$1" '.assets[] | select(.name == $n) | .url' release.json)
+  [ -n "$url" ] || { echo "release $tag has no $1" >&2; exit 1; }
+  gh_get -H "Accept: application/octet-stream" -o "$1" "$url"
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+cd "$tmp"
+gh_get -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/$repo/releases/tags/$tag" > release.json
+asset "$bin"
+asset SHA256SUMS
+grep " $bin\$" SHA256SUMS | sha256sum -c -
+
+install -m 755 "$bin" /usr/local/bin/twocan-helper
+systemctl restart twocan-helper
+systemctl is-active twocan-helper
+echo "twocan-helper $tag deployed"
