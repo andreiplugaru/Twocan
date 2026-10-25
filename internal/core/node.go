@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	libp2pevent "github.com/libp2p/go-libp2p/core/event"
@@ -95,6 +96,9 @@ type API interface {
 	MarkRead(ctx context.Context, id peer.ID) error
 	Subscribe() (<-chan any, func())
 	Reachability() network.Reachability
+	ContactDetails(ctx context.Context, id peer.ID) (ContactDetails, error)
+	Ping(ctx context.Context, id peer.ID) (time.Duration, error)
+	CheckConnection(ctx context.Context, id peer.ID, report func(int, p2p.Step)) (p2p.CheckResult, error)
 	Stop() error
 }
 
@@ -105,6 +109,7 @@ type Node struct {
 	h        host.Host
 	st       *store.Store
 	r        p2p.Reacher
+	diag     diagnoser // r, if it can run checks (nil under startWith in tests)
 	connInfo func(peer.ID) (connected, relayed bool)
 	log      *slog.Logger
 	bus      *event.Bus
@@ -120,8 +125,10 @@ type Node struct {
 	loops *svc.Tracker
 	reach atomic.Int32 // network.Reachability
 
-	mu    sync.Mutex // guards peers
-	peers map[peer.ID]*peerState
+	mu        sync.Mutex // guards peers, health and nextSweep
+	peers     map[peer.ID]*peerState
+	health    map[peer.ID]*health
+	nextSweep time.Time // when the presence sweep runs next
 
 	stopOnce sync.Once
 	stopErr  error
@@ -234,7 +241,9 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 		iv:       iv,
 		loops:    svc.NewTracker(),
 		peers:    make(map[peer.ID]*peerState),
+		health:   make(map[peer.ID]*health),
 	}
+	n.diag, _ = r.(diagnoser)
 	n.reach.Store(int32(network.ReachabilityUnknown))
 	n.contacts = contacts.New(h, st, r, n.bus, n.DisplayName)
 	n.chat = chat.New(h, st, r, n.bus)

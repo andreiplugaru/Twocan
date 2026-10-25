@@ -13,6 +13,7 @@ import (
 
 	"twocan/internal/helper"
 	"twocan/internal/identity"
+	"twocan/internal/p2p"
 	"twocan/internal/store"
 )
 
@@ -99,4 +100,28 @@ func TestChatThroughRelay(t *testing.T) {
 	v := view(t, a, b.PeerID())
 	require.True(t, v.Connected, "A not connected to B")
 	require.True(t, v.Relayed, "A's connection to B is not relayed")
+
+	det, err := a.ContactDetails(t.Context(), b.PeerID())
+	require.NoError(t, err)
+	require.NotEmpty(t, det.Conns)
+	for _, c := range det.Conns {
+		require.True(t, c.Relayed)
+		require.Equal(t, p2p.SourceHelper, c.Source, "A found B through the helper")
+	}
+	rtt, err := a.Ping(t.Context(), b.PeerID())
+	require.NoError(t, err)
+	require.Positive(t, rtt)
+
+	var reports int
+	res, err := a.CheckConnection(t.Context(), b.PeerID(), func(int, p2p.Step) { reports++ })
+	require.NoError(t, err)
+	require.Positive(t, reports)
+	require.True(t, res.Relayed)
+	require.Contains(t, res.Verdict, "Connected through the helper's relay")
+	statusOf := map[string]p2p.StepStatus{}
+	for _, s := range res.Steps {
+		statusOf[s.Title] = s.Status
+	}
+	require.Equal(t, p2p.StepOK, statusOf["Helper"])
+	require.Equal(t, p2p.StepOK, statusOf["Relay connection"])
 }

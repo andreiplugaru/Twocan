@@ -28,6 +28,8 @@ type MainView struct {
 	// Dialogs opened by the "My card" and "Add contact" buttons and, from
 	// Run, on first start (dialogs.go). A nil func does nothing.
 	showMyCard, showAddContact, showFirstRun func()
+	// showDetails opens the connection details of a contact (details.go).
+	showDetails func(id peer.ID, name string)
 
 	// Left pane (contacts.go).
 	name        *widget.Label
@@ -38,6 +40,7 @@ type MainView struct {
 
 	// Right pane (chat.go).
 	peerName   *widget.Label      // header: the selected contact's name, "" when none
+	detailsBtn *widget.Button     // header: opens the selected contact's details
 	drafts     map[peer.ID]string // unsent entry text of the contacts not selected
 	msgs       []store.Message    // conversation with selected, oldest first
 	convo      *widget.List
@@ -60,6 +63,7 @@ func NewMainView(api core.API, w fyne.Window) *MainView {
 	v.showMyCard = func() { showMyCard(api, w) }
 	v.showAddContact = func() { showAddContact(api, w) }
 	v.showFirstRun = func() { showFirstRun(api, w, v.refreshName) }
+	v.showDetails = func(id peer.ID, name string) { showDetails(api, w, id, name) }
 	v.buildContacts()
 	v.buildChat()
 	v.buildStatus()
@@ -77,7 +81,8 @@ func (v *MainView) Content() fyne.CanvasObject {
 	left := container.NewBorder(header, addContact, nil, nil, v.contactList)
 
 	bar := container.NewBorder(v.sendErr, nil, nil, v.send, v.entry)
-	right := container.NewBorder(v.peerName, bar, nil, nil, v.convoBox)
+	top := container.NewBorder(nil, nil, nil, v.detailsBtn, v.peerName)
+	right := container.NewBorder(top, bar, nil, nil, v.convoBox)
 
 	split := container.NewHSplit(left, right)
 	split.Offset = 0.3

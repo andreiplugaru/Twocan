@@ -163,8 +163,10 @@ func TestNewNodeNoListenAddrsWithBootstrap(t *testing.T) {
 func TestMDNSNotifeeAddsAddrsWithoutDialing(t *testing.T) {
 	a, b := newTestNode(t), newTestNode(t)
 	log, logBuf := logtest.New()
-	mdnsNotifee{h: a.Host(), log: log}.
+	o := newOrigins()
+	mdnsNotifee{h: a.Host(), log: log, origins: o}.
 		HandlePeerFound(peer.AddrInfo{ID: b.Host().ID(), Addrs: b.Host().Addrs()})
+	require.Len(t, o.mdns[b.Host().ID()], len(b.Host().Addrs()))
 	require.Contains(t, logBuf.String(), `msg="mdns found peer" peer=`+b.Host().ID().String())
 
 	require.ElementsMatch(t, b.Host().Addrs(), a.Host().Peerstore().Addrs(b.Host().ID()))
