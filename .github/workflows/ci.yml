@@ -28,3 +28,23 @@ jobs:
       - run: go test -race ./...
       - name: Kill -9 durability test
         run: go test -tags integration ./cmd/twocan-cli/
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # The runner's Android SDK is used; Gradle installs a missing platform
+      # or NDK version itself. build-go.sh builds the Go core into the app.
+      - name: Test, lint and build the Android app
+        working-directory: android
+        run: ./gradlew --console=plain testDebugUnitTest lintDebug assembleDebug

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
+
 	"twocan/internal/core"
 	"twocan/internal/p2p"
 )
@@ -105,6 +107,18 @@ func mainConn(conns []p2p.Conn) p2p.Conn {
 
 func since(now, t time.Time) string {
 	return max(now.Sub(t), 0).Round(time.Second).String()
+}
+
+// Reachability says whether others can dial us: "public", "behind NAT" or,
+// until AutoNAT has decided, "checking…".
+func Reachability(r network.Reachability) string {
+	switch r {
+	case network.ReachabilityPublic:
+		return "public"
+	case network.ReachabilityPrivate:
+		return "behind NAT"
+	}
+	return "checking…"
 }
 
 // Mark is the one-character symbol for a step status.

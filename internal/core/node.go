@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,9 @@ type Options struct {
 	ListenAddrs  []string // nil: p2p.DefaultListenAddrs
 	EnableMDNS   bool
 	ForcePrivate bool
+	// InterfaceIPs, if set, lists this machine's IPs where libp2p cannot
+	// (Android): see p2p.Config.InterfaceIPs.
+	InterfaceIPs func() ([]net.IP, error)
 	// Log receives the node's events (nil: discard). Never message text or keys.
 	Log *slog.Logger
 }
@@ -172,6 +176,7 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		Bootstrap:    boot,
 		EnableMDNS:   opts.EnableMDNS,
 		ForcePrivate: opts.ForcePrivate,
+		InterfaceIPs: opts.InterfaceIPs,
 		Log:          opts.Log,
 	})
 	if err != nil {

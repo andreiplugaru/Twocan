@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the log is shared; the key and database sit beside it but are
+     never offered (SettingsScreen shares twocan.log by name). -->
+<paths>
+    <files-path name="log" path="twocan/" />
+</paths>

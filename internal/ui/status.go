@@ -1,9 +1,9 @@
 package ui
 
 import (
-	"github.com/libp2p/go-libp2p/core/network"
-
 	"fyne.io/fyne/v2/widget"
+
+	"twocan/internal/diagtext"
 )
 
 // buildStatus creates the status bar.
@@ -13,7 +13,7 @@ func (v *MainView) buildStatus() {
 
 // updateStatus shows our reachability and the link to the selected contact.
 func (v *MainView) updateStatus() {
-	text := "You are reachable: " + reachText(v.reach)
+	text := "You are reachable: " + diagtext.Reachability(v.reach)
 	if c, ok := v.selectedContact(); ok {
 		switch {
 		case !c.Connected:
@@ -25,14 +25,4 @@ func (v *MainView) updateStatus() {
 		}
 	}
 	v.status.SetText(text)
-}
-
-func reachText(r network.Reachability) string {
-	switch r {
-	case network.ReachabilityPublic:
-		return "public"
-	case network.ReachabilityPrivate:
-		return "behind NAT"
-	}
-	return "checking…"
 }

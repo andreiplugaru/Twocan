@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,6 +64,9 @@ type Config struct {
 	// ForcePrivate makes the node believe it is behind a NAT (tests use it to
 	// force relaying).
 	ForcePrivate bool
+	// InterfaceIPs, if set, lists this machine's IPs for the addresses we
+	// advertise, where libp2p cannot list them itself (see withInterfaceIPs).
+	InterfaceIPs func() ([]net.IP, error)
 	// Log receives connection, discovery and reachability events (nil: discard).
 	Log *slog.Logger
 }
@@ -125,6 +129,9 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 	}
 	if cfg.ForcePrivate {
 		opts = append(opts, libp2p.ForceReachabilityPrivate())
+	}
+	if cfg.InterfaceIPs != nil {
+		opts = append(opts, libp2p.AddrsFactory(withInterfaceIPs(cfg.InterfaceIPs, n.log)))
 	}
 
 	h, err := libp2p.New(opts...)
