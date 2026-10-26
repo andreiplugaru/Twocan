@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -167,23 +168,39 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	log := opts.Log
+	if log == nil {
+		log = logging.Discard()
+	}
 	// The libp2p node's background work lives until Stop, not until the
 	// caller's (possibly short-lived) ctx ends.
 	nodeCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	pn, err := p2p.NewNode(nodeCtx, p2p.Config{
-		PrivKey:      key,
-		ListenAddrs:  listen,
-		Bootstrap:    boot,
-		EnableMDNS:   opts.EnableMDNS,
-		ForcePrivate: opts.ForcePrivate,
-		InterfaceIPs: opts.InterfaceIPs,
-		Log:          opts.Log,
-	})
+	newNode := func(listen []string) (*p2p.Node, error) {
+		return p2p.NewNode(nodeCtx, p2p.Config{
+			PrivKey:      key,
+			ListenAddrs:  listen,
+			Bootstrap:    boot,
+			EnableMDNS:   opts.EnableMDNS,
+			ForcePrivate: opts.ForcePrivate,
+			InterfaceIPs: opts.InterfaceIPs,
+			Log:          opts.Log,
+		})
+	}
+	// Ask for last run's ports (see listen.go).
+	tried := withSavedPorts(listen, savedListenAddrs(ctx, st))
+	pn, err := newNode(tried)
+	if err != nil && !slices.Equal(tried, listen) {
+		log.Info("saved listen ports taken; using new ones", "err", err)
+		tried = listen
+		pn, err = newNode(listen)
+	}
 	if err != nil {
 		cancel()
 		st.Close()
 		return nil, err
 	}
+	relistenTaken(pn.Host(), listen, tried, log)
+	saveListenAddrs(ctx, st, pn.Host(), listen, log)
 	n, err := startWith(ctx, pn.Host(), st, pn, pn.ConnInfo, intervals{}, opts.Log)
 	if err != nil {
 		pn.Close()
