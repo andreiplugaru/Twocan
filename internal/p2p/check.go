@@ -142,7 +142,7 @@ func (c *checker) helper(ctx context.Context) (StepStatus, string) {
 	var err error
 	for _, b := range c.n.boot {
 		if c.n.host.Network().Connectedness(b.ID) != network.Connected {
-			c.clearBackoff(b.ID)
+			c.n.clearBackoff(b.ID)
 			if e := c.n.connect(ctx, b); e != nil {
 				err = e
 				continue
@@ -223,20 +223,19 @@ func (c *checker) direct(ctx context.Context) (StepStatus, string) {
 	if conn := c.directConn(); conn != nil {
 		return StepOK, fmt.Sprintf("Already connected directly (%s to %s).", transportName(conn.RemoteMultiaddr()), conn.RemoteMultiaddr())
 	}
-	var addrs []ma.Multiaddr
-	for _, a := range c.n.host.Peerstore().Addrs(c.id) {
-		if !isCircuit(a) {
-			addrs = append(addrs, a)
-		}
-	}
+	addrs := c.n.directAddrs(c.id)
 	if len(addrs) == 0 {
 		return StepSkipped, "No direct address is known for them."
 	}
-	c.clearBackoff(c.id)
+	c.n.clearBackoff(c.id)
 	ctx = network.WithForceDirectDial(ctx, "twocan-check")
 	if err := c.n.connect(ctx, peer.AddrInfo{ID: c.id, Addrs: addrs}); err != nil {
 		c.lastErr = err
-		return StepFail, fmt.Sprintf("%s Tried %s.", Explain(err), plural(len(addrs), "address", "addresses"))
+		tried := plural(len(addrs), "address", "addresses")
+		if lines := DialFailures(err); len(lines) > 0 {
+			return StepFail, fmt.Sprintf("%s Tried %s:\n%s", Explain(err), tried, strings.Join(lines, "\n"))
+		}
+		return StepFail, fmt.Sprintf("%s Tried %s.", Explain(err), tried)
 	}
 	if conn := c.directConn(); conn != nil {
 		return StepOK, fmt.Sprintf("Connected directly (%s to %s).", transportName(conn.RemoteMultiaddr()), conn.RemoteMultiaddr())
@@ -357,32 +356,10 @@ func plural(n int, one, many string) string {
 	return fmt.Sprintf("%d %s", n, many)
 }
 
-// clearBackoff forgets recent failed dials to id: the user asked for this
-// check, so it dials afresh instead of reporting an earlier failure.
-func (c *checker) clearBackoff(id peer.ID) {
-	if sw, ok := c.n.host.Network().(*swarm.Swarm); ok {
-		sw.Backoff().Clear(id)
-	}
-}
+func (c *checker) hasDirectAddrs() bool { return len(c.n.directAddrs(c.id)) > 0 }
 
 // directConn returns an open direct connection to the peer, or nil.
-func (c *checker) directConn() network.Conn {
-	for _, conn := range c.n.host.Network().ConnsToPeer(c.id) {
-		if !isCircuit(conn.RemoteMultiaddr()) {
-			return conn
-		}
-	}
-	return nil
-}
-
-func (c *checker) hasDirectAddrs() bool {
-	for _, a := range c.n.host.Peerstore().Addrs(c.id) {
-		if !isCircuit(a) {
-			return true
-		}
-	}
-	return false
-}
+func (c *checker) directConn() network.Conn { return c.n.directConn(c.id) }
 
 // verdict sums the check up in one line.
 func (c *checker) verdict(ctx context.Context, connected, relayed bool) string {

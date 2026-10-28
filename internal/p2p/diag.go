@@ -274,9 +274,11 @@ func Explain(err error) string {
 	case strings.Contains(s, "no addresses") || strings.Contains(s, "no good addresses"):
 		return "No usable address is known for them."
 	case strings.Contains(s, "connection refused"):
-		return "Their address refused the connection: the app isn't running there any more (it picks new ports at each start)."
+		return "Their address refused the connection: the app isn't running there, or the address is out of date."
 	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(s, "deadline exceeded") || strings.Contains(s, "timeout"):
 		return "No answer: they may be offline, or a firewall drops the connection."
+	case strings.Contains(s, "black hole"):
+		return "Not tried: after many failed attempts, your device stopped dialling UDP or IPv6 addresses for a while. Restarting Twocan resets that."
 	case strings.Contains(s, "no route to host") || strings.Contains(s, "network is unreachable"):
 		return "Your computer has no route to their addresses (for example, no IPv6)."
 	case strings.Contains(s, "dial backoff"):

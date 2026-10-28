@@ -90,7 +90,9 @@ Select the contact and click **Details** above the conversation (or run `/info <
 6. a dial through the helper's relay;
 7. a hole punch.
 
-It ends with a one-line verdict. **Copy results** puts the whole report on the clipboard, ready to paste into a bug report. Successful dials stay connected. "Last seen" and "last problem" cover the current session only.
+It ends with a one-line verdict. The direct dial lists every address it tried and why each failed. **Copy results** puts the whole report on the clipboard, ready to paste into a bug report. Successful dials stay connected. "Last seen" and "last problem" cover the current session only.
+
+**Why you might be on the relay, and how Twocan gets off it.** Twocan keeps the same ports from one start to the next, so the addresses your contacts saved keep working. When two contacts connect, even through the relay, each sends the other its own addresses, including the local network ones that libp2p and the helper never pass on. While a contact is connected only through the relay, Twocan tries those addresses right away and then every minute, and switches to a direct connection as soon as one works. If you stay on the relay, the direct dial in **Check connection** shows which addresses fail and why: "no answer" usually means a firewall, or a Wi-Fi network that keeps devices apart.
 
 ## Command-line client
 

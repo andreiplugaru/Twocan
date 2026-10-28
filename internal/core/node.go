@@ -29,6 +29,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
 
+	"twocan/internal/addrshare"
 	"twocan/internal/chat"
 	"twocan/internal/contacts"
 	"twocan/internal/event"
@@ -120,6 +121,8 @@ type Node struct {
 	bus      *event.Bus
 	contacts *contacts.Service
 	chat     *chat.Service
+	addrs    *addrshare.Service
+	dialer   directDialer // r, if it can dial without the relay (nil under startWith in tests)
 
 	// Set by Start only (nil under startWith): the libp2p node and the
 	// cancel func of its lifetime context.
@@ -130,10 +133,11 @@ type Node struct {
 	loops *svc.Tracker
 	reach atomic.Int32 // network.Reachability
 
-	mu        sync.Mutex // guards peers, health and nextSweep
+	mu        sync.Mutex // guards peers, health, nextSweep and upgrading
 	peers     map[peer.ID]*peerState
 	health    map[peer.ID]*health
-	nextSweep time.Time // when the presence sweep runs next
+	nextSweep time.Time        // when the presence sweep runs next
+	upgrading map[peer.ID]bool // a direct dial to replace the relay is running
 
 	stopOnce sync.Once
 	stopErr  error
@@ -228,6 +232,9 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	if iv.presence == 0 {
 		iv.presence = defaultPresence
 	}
+	if iv.direct == 0 {
+		iv.direct = defaultDirect
+	}
 	cs, err := st.ListContacts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("core: list contacts: %w", err)
@@ -254,27 +261,32 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	}
 
 	n := &Node{
-		h:        h,
-		st:       st,
-		r:        r,
-		connInfo: connInfo,
-		log:      nodeLog,
-		bus:      event.NewBus(),
-		iv:       iv,
-		loops:    svc.NewTracker(),
-		peers:    make(map[peer.ID]*peerState),
-		health:   make(map[peer.ID]*health),
+		h:         h,
+		st:        st,
+		r:         r,
+		connInfo:  connInfo,
+		log:       nodeLog,
+		bus:       event.NewBus(),
+		iv:        iv,
+		loops:     svc.NewTracker(),
+		peers:     make(map[peer.ID]*peerState),
+		health:    make(map[peer.ID]*health),
+		upgrading: make(map[peer.ID]bool),
 	}
 	n.diag, _ = r.(diagnoser)
+	n.dialer, _ = r.(directDialer)
 	n.reach.Store(int32(network.ReachabilityUnknown))
 	n.contacts = contacts.New(h, st, r, n.bus, n.DisplayName)
 	n.chat = chat.New(h, st, r, n.bus)
+	n.addrs = addrshare.New(h, st, n.contactAddrsArrived)
 	n.contacts.SetLogger(log)
 	n.chat.SetLogger(log)
+	n.addrs.SetLogger(log)
 	// Subscribe before the services start so no ContactChanged is missed.
 	busEvents, cancelBus := n.bus.Subscribe()
 	n.contacts.Start()
 	n.chat.Start()
+	n.addrs.Start()
 	n.loops.Go(func(ctx context.Context) {
 		defer sub.Close()
 		defer cancelBus()
@@ -290,6 +302,7 @@ func (n *Node) Stop() error {
 		n.loops.Close()
 		n.contacts.Close()
 		n.chat.Close()
+		n.addrs.Close()
 		var errs []error
 		if n.pn != nil {
 			errs = append(errs, n.pn.Close())
