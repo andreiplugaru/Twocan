@@ -13,6 +13,7 @@ Twocan v1 is a learning project: one-to-one text chat only. The notes in [`docs/
 | `twocan` | The desktop app: contacts on the left, conversation on the right |
 | `twocan-cli` | The same thing in a terminal, handy for testing and scripting |
 | `twocan-helper` | The helper server: peer discovery (private DHT), relay, reachability checks |
+| Android app | The same chat on your phone, in [`android/`](android/) (see [Android app](#android-app)) |
 
 ## Download
 
@@ -116,6 +117,33 @@ bin/twocan-cli --data-dir /tmp/ben --name Ben  # a second identity on the same m
 
 `<who>` is the start of a contact's name or peer ID.
 
+## Android app
+
+The Android app (Android 8 and up) does everything the desktop app does: your card as a QR code to scan or text to share, adding contacts by scanning their QR code with the camera or pasting their card, requests, nicknames (long-press a contact), chat with 🕓/✓, connection details and Check connection (the ⓘ in a conversation). The phone is its own identity, with its own card and history, just like another computer.
+
+**It is online only while it is open**, and for a minute after you leave it. Messages sent to you meanwhile wait on the sender's device and arrive when you are both online. Wake-up notifications are planned for the next version.
+
+It finds contacts through the helper only: Android does not let apps list the network interfaces the way local-network discovery (mDNS) needs, so two phones on the same Wi-Fi still need the helper to find each other. Once found, they connect directly over the Wi-Fi.
+
+### Building it
+
+You need Go, a JDK (17 or newer), and the Android SDK with the NDK. Android Studio installs the SDK; without it, use the [command-line tools](https://developer.android.com/studio#command-line-tools-only):
+
+```bash
+sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "ndk;29.0.14206865"
+echo "sdk.dir=$HOME/Android/Sdk" > android/local.properties
+
+cd android
+TWOCAN_BOOTSTRAP=/ip4/203.0.113.7/tcp/4001/p2p/12D3KooW... ./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk   # or copy the APK to the phone
+```
+
+The build first turns the Go code into an Android library with gomobile ([`android/build-go.sh`](android/build-go.sh)); `TWOCAN_BOOTSTRAP` bakes your helper's addresses in, as for the desktop release. You can also set or change them in the app under **Settings → Helper addresses**.
+
+Install updates over the old app (`adb install -r`) and always build on the same computer: Android only accepts an update signed with the same key, and the debug key is per computer. **Uninstalling deletes your identity and history**, and contacts would have to add you again. The app is excluded from Android's cloud backups on purpose, since they would copy your private key off the phone.
+
+To share the log for troubleshooting, use **Settings → Share log**.
+
 ## Flags
 
 | Flag | Applies to | Meaning |
@@ -149,9 +177,12 @@ Each install is its own identity. History does not sync between devices.
 ```bash
 go test -race ./...                              # unit + in-process network tests
 go test -tags integration ./cmd/twocan-cli/      # kill -9 durability test (~20 s)
+cd android && ./gradlew testDebugUnitTest lintDebug   # Android app: Kotlin tests and lint
 ```
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs vet, the race-enabled test suite and the durability test on every push to `main` and on every pull request.
+The Android app talks to Go through the `mobile` package, which wraps the same `core.API` as the desktop app and the CLI. Its tests run two nodes over loopback in `go test ./mobile`.
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs vet, the race-enabled test suite and the durability test on every push to `main` and on every pull request, and builds, lints and unit-tests the Android app.
 
 ## Releases
 

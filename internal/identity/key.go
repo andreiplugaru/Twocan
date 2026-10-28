@@ -38,10 +38,11 @@ func LoadOrCreateKey(path string) (crypto.PrivKey, error) {
 // createKey generates a key and saves it at path, so that path either does
 // not exist or holds a whole key, even if the write fails or the machine
 // crashes part way. The key is written to a temp file in the same directory
-// (os.CreateTemp makes it 0600), synced to disk, and then hard-linked to
-// path. Like O_EXCL, link(2) fails if path already exists, so a key another
-// process created in the meantime is never replaced (rename(2) would replace
-// it silently). The temp file is always removed; path keeps the key.
+// (os.CreateTemp makes it 0600), synced to disk, and then moved to path by
+// saveNew, which like O_EXCL fails if path already exists: a key another
+// process created in the meantime is never replaced (a plain rename(2)
+// would replace it silently). The temp file is always removed; path keeps
+// the key.
 func createKey(path string) (crypto.PrivKey, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -71,7 +72,7 @@ func createKey(path string) (crypto.PrivKey, error) {
 	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("write key file: %w", err)
 	}
-	if err := os.Link(f.Name(), path); err != nil {
+	if err := saveNew(f.Name(), path); err != nil {
 		return nil, fmt.Errorf("save key file: %w", err)
 	}
 	syncDir(dir)
@@ -86,6 +87,10 @@ func syncDir(dir string) {
 		d.Close()
 	}
 }
+
+// hardLink is os.Link. Tests replace it to simulate Android, where apps may
+// not create hard links.
+var hardLink = os.Link
 
 // writeKey writes the new key's bytes to f. Tests replace it to simulate a
 // failed write.

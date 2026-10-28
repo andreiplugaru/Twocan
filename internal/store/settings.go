@@ -9,6 +9,10 @@ import (
 // SettingDisplayName is the settings key holding the user's display name.
 const SettingDisplayName = "display_name"
 
+// SettingListenAddrs holds the comma-separated addresses the node listened
+// on last time, so it can ask for the same ports again.
+const SettingListenAddrs = "listen_addrs"
+
 // GetSetting returns the value for key; ok is false if unset.
 func (s *Store) GetSetting(ctx context.Context, key string) (string, bool, error) {
 	var v string

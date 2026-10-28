@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -68,6 +69,24 @@ func TestLoadOrCreateKeyNeverClobbers(t *testing.T) {
 	got, err := os.ReadFile(p)
 	require.NoError(t, err)
 	require.Equal(t, "existing", string(got))
+	ents, err := os.ReadDir(filepath.Dir(p))
+	require.NoError(t, err)
+	require.Len(t, ents, 1, "temp file removed")
+}
+
+// Android forbids apps to create hard links; the key must still be saved.
+func TestCreateKeyWithoutHardLinks(t *testing.T) {
+	orig := hardLink
+	t.Cleanup(func() { hardLink = orig })
+	hardLink = func(oldname, newname string) error {
+		return &os.LinkError{Op: "link", Old: oldname, New: newname, Err: syscall.EACCES}
+	}
+	p := filepath.Join(t.TempDir(), "identity.key")
+	k1, err := LoadOrCreateKey(p)
+	require.NoError(t, err)
+	k2, err := LoadOrCreateKey(p)
+	require.NoError(t, err)
+	require.True(t, k1.Equals(k2))
 	ents, err := os.ReadDir(filepath.Dir(p))
 	require.NoError(t, err)
 	require.Len(t, ents, 1, "temp file removed")

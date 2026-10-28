@@ -1,0 +1,6 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+# Built from ../mobile by build-go.sh.
+app/libs/
