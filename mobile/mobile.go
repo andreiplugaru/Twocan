@@ -25,6 +25,7 @@ import (
 	"twocan/internal/identity"
 	"twocan/internal/logging"
 	"twocan/internal/p2p"
+	"twocan/internal/richtext"
 	"twocan/internal/store"
 )
 
@@ -32,6 +33,8 @@ import (
 //
 //	{"type":"message","message":<Message>}        a message arrived
 //	{"type":"delivered","peer":"…","id":"…"}      a sent message was delivered
+//	{"type":"updated","peer":"…","ids":["…"]}     messages were edited, deleted, reacted to or read
+//	{"type":"typing","peer":"…"}                  the contact is typing (for chat.TypingFor)
 //	{"type":"contacts"}                           the contact list changed
 //	{"type":"reachability","text":"public"}       our reachability changed
 //
@@ -207,12 +210,17 @@ func (n *Node) Contacts() (string, error) {
 
 // messageJSON is one message.
 type messageJSON struct {
-	ID     string `json:"id"` // hex; with out, identifies the message
-	Peer   string `json:"peer"`
-	Out    bool   `json:"out"`
-	Text   string `json:"text"`
-	At     int64  `json:"at"`     // Unix milliseconds: when sent (out) or received (in)
-	Status string `json:"status"` // pending or delivered (out), received (in)
+	ID            string `json:"id"` // hex
+	Peer          string `json:"peer"`
+	Out           bool   `json:"out"`
+	Text          string `json:"text"`     // "" once deleted
+	At            int64  `json:"at"`       // Unix milliseconds: when sent (out) or received (in)
+	Status        string `json:"status"`   // pending, delivered or read (out), received (in)
+	ReplyTo       string `json:"replyTo"`  // hex ID of the message this answers; "" if none
+	EditedAt      int64  `json:"editedAt"` // Unix milliseconds; 0 if never edited
+	Deleted       bool   `json:"deleted"`  // deleted for everyone
+	MyReaction    string `json:"myReaction"`
+	TheirReaction string `json:"theirReaction"`
 }
 
 func toMessageJSON(m store.Message) messageJSON {
@@ -220,10 +228,18 @@ func toMessageJSON(m store.Message) messageJSON {
 	if m.Direction == store.DirOut {
 		at = m.SentAt
 	}
-	return messageJSON{
+	j := messageJSON{
 		ID: hex.EncodeToString(m.ID), Peer: m.PeerID.String(), Out: m.Direction == store.DirOut,
 		Text: m.Text, At: at.UnixMilli(), Status: string(m.Status),
+		Deleted: m.Deleted, MyReaction: m.MyReaction, TheirReaction: m.TheirReaction,
 	}
+	if m.ReplyTo != nil {
+		j.ReplyTo = hex.EncodeToString(m.ReplyTo)
+	}
+	if !m.EditedAt.IsZero() {
+		j.EditedAt = m.EditedAt.UnixMilli()
+	}
+	return j
 }
 
 // History is the conversation with peerID, oldest first, as a JSON array
@@ -256,6 +272,92 @@ func (n *Node) Send(peerID, text string) (string, error) {
 		return "", friendly(err)
 	}
 	return marshal(toMessageJSON(m)), nil
+}
+
+// Reply sends text to peerID as an answer to message replyTo (hex) and
+// returns the new message as messageJSON.
+func (n *Node) Reply(peerID, replyTo, text string) (string, error) {
+	id, err := parsePeer(peerID)
+	if err != nil {
+		return "", err
+	}
+	rid, err := parseMsgID(replyTo)
+	if err != nil {
+		return "", err
+	}
+	m, err := n.api.Reply(context.Background(), id, rid, text)
+	if err != nil {
+		return "", friendly(err)
+	}
+	return marshal(toMessageJSON(m)), nil
+}
+
+// Edit replaces the text of our message msgID (hex), on both sides.
+func (n *Node) Edit(peerID, msgID, text string) error {
+	id, mid, err := parsePeerMsg(peerID, msgID)
+	if err != nil {
+		return err
+	}
+	return friendly(n.api.Edit(context.Background(), id, mid, text))
+}
+
+// Delete deletes message msgID (hex): for everyone (ours only) or from
+// this phone only.
+func (n *Node) Delete(peerID, msgID string, forEveryone bool) error {
+	id, mid, err := parsePeerMsg(peerID, msgID)
+	if err != nil {
+		return err
+	}
+	return friendly(n.api.Delete(context.Background(), id, mid, forEveryone))
+}
+
+// React sets our reaction to message msgID (hex); "" removes it.
+func (n *Node) React(peerID, msgID, emoji string) error {
+	id, mid, err := parsePeerMsg(peerID, msgID)
+	if err != nil {
+		return err
+	}
+	return friendly(n.api.React(context.Background(), id, mid, emoji))
+}
+
+// Typing tells peerID we are typing; call it as the user types (it is
+// throttled, and never dials).
+func (n *Node) Typing(peerID string) {
+	if id, err := parsePeer(peerID); err == nil {
+		n.api.Typing(id)
+	}
+}
+
+// Search finds messages in every conversation containing all the words of
+// query, newest first, as a JSON array of messageJSON.
+func (n *Node) Search(query string) (string, error) {
+	msgs, err := n.api.Search(context.Background(), query)
+	if err != nil {
+		return "", friendly(err)
+	}
+	out := make([]messageJSON, len(msgs))
+	for i, m := range msgs {
+		out[i] = toMessageJSON(m)
+	}
+	return marshal(out), nil
+}
+
+// spanJSON is a run of formatted text (see richtext.Span).
+type spanJSON struct {
+	Text   string `json:"text"`
+	Bold   bool   `json:"bold"`
+	Italic bool   `json:"italic"`
+	URL    string `json:"url"` // set for a link
+}
+
+// Format splits message text into formatted runs (bold, italic, links), as
+// a JSON array of spanJSON, the same way the desktop app shows them.
+func Format(text string) string {
+	out := []spanJSON{}
+	for _, s := range richtext.Parse(text) {
+		out = append(out, spanJSON{Text: s.Text, Bold: s.Bold, Italic: s.Italic, URL: s.URL})
+	}
+	return marshal(out)
 }
 
 // MarkRead marks the conversation with peerID read.
@@ -358,6 +460,14 @@ func eventJSON(ev any) (js string, ok bool) {
 		return marshal(map[string]any{"type": "message", "message": toMessageJSON(e.Msg)}), true
 	case event.MessageDelivered:
 		return marshal(map[string]any{"type": "delivered", "peer": e.Peer.String(), "id": hex.EncodeToString(e.ID)}), true
+	case event.MessagesUpdated:
+		ids := make([]string, len(e.IDs))
+		for i, id := range e.IDs {
+			ids[i] = hex.EncodeToString(id)
+		}
+		return marshal(map[string]any{"type": "updated", "peer": e.Peer.String(), "ids": ids}), true
+	case event.Typing:
+		return marshal(map[string]any{"type": "typing", "peer": e.Peer.String()}), true
 	case event.ContactChanged, event.Connectivity:
 		return marshal(map[string]any{"type": "contacts"}), true
 	case event.Reachability:
@@ -378,6 +488,26 @@ func marshal(v any) string {
 // errBadPeer is returned for a peer ID that does not parse; the app only
 // passes IDs it got from this package, so it means a bug.
 var errBadPeer = errors.New("invalid peer ID")
+
+// errBadMessageID is returned for a message ID that is not hex.
+var errBadMessageID = errors.New("invalid message ID")
+
+func parseMsgID(s string) ([]byte, error) {
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) == 0 {
+		return nil, errBadMessageID
+	}
+	return b, nil
+}
+
+func parsePeerMsg(peerID, msgID string) (peer.ID, []byte, error) {
+	id, err := parsePeer(peerID)
+	if err != nil {
+		return "", nil, err
+	}
+	mid, err := parseMsgID(msgID)
+	return id, mid, err
+}
 
 func parsePeer(s string) (peer.ID, error) {
 	id, err := peer.Decode(s)

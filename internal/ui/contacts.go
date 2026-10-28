@@ -110,6 +110,11 @@ func (v *MainView) selectContact(id peer.ID) {
 	if id == v.selected {
 		return
 	}
+	if v.editing != nil {
+		v.cancelCompose() // the draft from before the edit comes back first
+	}
+	v.endCompose()
+	v.hideTyping()
 	if v.selected != "" && v.entry.Text != "" {
 		v.drafts[v.selected] = v.entry.Text
 	}

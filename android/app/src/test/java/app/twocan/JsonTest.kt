@@ -50,5 +50,26 @@ class JsonTest {
         assertEquals(NodeEvent.ContactsChanged, Json.event("""{"type":"contacts"}"""))
         assertEquals(NodeEvent.Reachability("behind NAT"), Json.event("""{"type":"reachability","text":"behind NAT"}"""))
         assertNull(Json.event("""{"type":"something-new"}"""))
+        assertEquals(NodeEvent.Updated("p", listOf("01", "02")), Json.event("""{"type":"updated","peer":"p","ids":["01","02"]}"""))
+        assertEquals(NodeEvent.Typing("p"), Json.event("""{"type":"typing","peer":"p"}"""))
+    }
+
+    @Test
+    fun messageWithChatFeatures() {
+        val m = Json.message(
+            """{"id":"02","peer":"p","out":true,"text":"yes","at":5,"status":"read","replyTo":"01",""" +
+                """"editedAt":9,"deleted":false,"myReaction":"","theirReaction":"❤️"}"""
+        )
+        assertEquals(Message("02", "p", true, "yes", 5, "read", "01", 9, false, "", "❤️"), m)
+        assertEquals(true, m.read)
+        assertEquals(true, m.edited)
+    }
+
+    @Test
+    fun spans() {
+        assertEquals(
+            listOf(Span("a ", false, false, ""), Span("b", true, false, ""), Span("x.y", false, false, "https://x.y")),
+            Json.spans("""[{"text":"a ","bold":false,"italic":false,"url":""},{"text":"b","bold":true,"italic":false,"url":""},{"text":"x.y","bold":false,"italic":false,"url":"https://x.y"}]"""),
+        )
     }
 }

@@ -102,7 +102,7 @@ func bubbles(v *MainView) []*bubble {
 func bubbleTexts(v *MainView) []string {
 	var out []string
 	for _, b := range bubbles(v) {
-		out = append(out, b.text.Text)
+		out = append(out, b.plainText())
 	}
 	return out
 }
@@ -228,7 +228,7 @@ func requireBottomVisible(t *testing.T, v *MainView, wantText string) {
 	d := fyne.CurrentApp().Driver()
 	bs := bubbles(v)
 	last := bs[len(bs)-1]
-	require.Equal(t, wantText, last.text.Text)
+	require.Equal(t, wantText, last.plainText())
 	bottom := d.AbsolutePositionForObject(last).Y + last.Size().Height
 	viewEnd := d.AbsolutePositionForObject(v.convo).Y + v.convo.Size().Height
 	require.LessOrEqual(t, bottom, viewEnd+0.5, "newest bubble is cut off below the viewport")
@@ -259,13 +259,13 @@ func TestRowsRemeasuredOnResize(t *testing.T) {
 	v := newTestView(t, f)
 	selectContact(t, v, ann)
 	wide := bubbles(v)[2]
-	require.Equal(t, long, wide.text.Text)
+	require.Equal(t, long, wide.plainText())
 	wideHeight := wide.Size().Height
 
 	v.win.Resize(fyne.NewSize(500, 600))
 
 	narrow := bubbles(v)[2]
-	require.Equal(t, long, narrow.text.Text)
+	require.Equal(t, long, narrow.plainText())
 	require.Greater(t, narrow.Size().Height, wideHeight, "the row grows when the text wraps more")
 	require.GreaterOrEqual(t, narrow.Size().Height, narrow.MinSize().Height, "the row fits the wrapped text")
 }
@@ -318,7 +318,7 @@ func TestSendFromEntry(t *testing.T) {
 	bs := bubbles(v)
 	require.Len(t, bs, 3)
 	last := bs[2]
-	require.Equal(t, "  hello ", last.text.Text)
+	require.Equal(t, "  hello ", last.plainText())
 	require.True(t, last.out)
 	require.Contains(t, last.meta.Text, "🕓")
 }

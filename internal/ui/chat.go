@@ -2,6 +2,8 @@ package ui
 
 import (
 	"bytes"
+	"net/url"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -11,8 +13,12 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"twocan/internal/errtext"
+	"twocan/internal/richtext"
 	"twocan/internal/store"
 )
+
+// quoteRunes is how much of a quoted message a reply shows.
+const quoteRunes = 60
 
 // bubbleWidth is the share of the conversation width a bubble takes.
 const bubbleWidth = 0.75
@@ -30,21 +36,29 @@ func (v *MainView) buildChat() {
 	v.drafts = make(map[peer.ID]string)
 	v.convo = widget.NewList(
 		func() int { return len(v.msgs) },
-		func() fyne.CanvasObject { return newBubble() },
-		func(id widget.ListItemID, o fyne.CanvasObject) { o.(*bubble).set(v.msgs[id]) })
+		func() fyne.CanvasObject { return newBubble(v.showMessageMenu) },
+		func(id widget.ListItemID, o fyne.CanvasObject) { o.(*bubble).set(v.msgs[id], v.quoteOf(v.msgs[id])) })
 	v.convo.HideSeparators = true
 	v.convo.OnSelected = func(widget.ListItemID) { v.convo.UnselectAll() }
 	v.convoBox = container.New(&widthLayout{onWidth: v.convoResized}, v.convo)
-	v.measurer = newBubble()
+	v.measurer = newBubble(nil)
 
 	v.entry = widget.NewEntry()
 	v.entry.SetPlaceHolder("Write a message")
 	v.entry.OnSubmitted = func(string) { v.sendEntry() }
+	v.entry.OnChanged = func(text string) {
+		if text != "" && v.selected != "" && v.editing == nil {
+			v.api.Typing(v.selected)
+		}
+	}
 	v.send = widget.NewButton("Send", v.sendEntry)
 	v.sendErr = widget.NewLabel("")
 	v.sendErr.Importance = widget.DangerImportance
 	v.sendErr.Wrapping = fyne.TextWrapWord
 	v.sendErr.Hide()
+	v.buildCompose()
+	v.typing = widget.NewLabelWithStyle("typing…", fyne.TextAlignTrailing, fyne.TextStyle{Italic: true})
+	v.typing.Hide()
 }
 
 // Row heights. widget.List gives every row the template's height unless
@@ -73,7 +87,7 @@ func (v *MainView) measure(id widget.ListItemID) {
 		return // not laid out yet; convoResized measures everything
 	}
 	b := v.measurer
-	b.set(v.msgs[id])
+	b.set(v.msgs[id], v.quoteOf(v.msgs[id]))
 	b.Resize(fyne.NewSize(v.convoWidth, b.Size().Height))
 	v.convo.SetItemHeight(id, b.MinSize().Height)
 }
@@ -129,21 +143,86 @@ func (v *MainView) updateEntry() {
 	}
 }
 
-// sendEntry sends the entry's text to the selected contact. On error the
-// text stays in the entry and the error shows above it.
+// sendEntry sends the entry's text to the selected contact: as a reply if
+// one is being written, or as the new text of the message being edited. On
+// error the text stays in the entry and the error shows above it.
 func (v *MainView) sendEntry() {
 	if v.selected == "" || v.entry.Disabled() {
 		return
 	}
-	m, err := v.api.Send(v.ctx, v.selected, v.entry.Text)
+	var (
+		m   store.Message
+		err error
+	)
+	switch {
+	case v.editing != nil:
+		err = v.api.Edit(v.ctx, v.selected, v.editing.ID, v.entry.Text)
+	case v.replyTo != nil:
+		m, err = v.api.Reply(v.ctx, v.selected, v.replyTo.ID, v.entry.Text)
+	default:
+		m, err = v.api.Send(v.ctx, v.selected, v.entry.Text)
+	}
 	if err != nil {
 		v.sendErr.SetText(errtext.FriendlyError(err))
 		v.sendErr.Show()
+		v.relayout()
 		return
 	}
-	v.sendErr.Hide()
+	if v.sendErr.Visible() {
+		v.sendErr.Hide()
+		v.relayout()
+	}
 	v.entry.SetText("")
+	if v.editing != nil {
+		id := v.editing.ID
+		v.endCompose()
+		v.messagesUpdated(v.selected, [][]byte{id})
+		return
+	}
+	v.endCompose()
 	v.appendMessage(m)
+}
+
+// quoteOf is the line a reply shows above its text: who wrote the message
+// it answers, and how it began; "" if m answers nothing.
+func (v *MainView) quoteOf(m store.Message) string {
+	if m.ReplyTo == nil {
+		return ""
+	}
+	i := v.indexOfID(m.ReplyTo)
+	if i < 0 {
+		return "» a message no longer here"
+	}
+	return "» " + v.snippet(v.msgs[i])
+}
+
+// snippet is "Name: start of the text" for message m.
+func (v *MainView) snippet(m store.Message) string {
+	who := "You"
+	if m.Direction == store.DirIn {
+		who = v.peerName.Text
+		if c, ok := v.selectedContact(); ok {
+			who = c.Name()
+		}
+	}
+	text := strings.Join(strings.Fields(richtext.Plain(m.Text)), " ")
+	if m.Deleted {
+		text = "deleted message"
+	}
+	if r := []rune(text); len(r) > quoteRunes {
+		text = string(r[:quoteRunes]) + "…"
+	}
+	return who + ": " + text
+}
+
+// indexOfID returns the index of the shown message with this ID, or -1.
+func (v *MainView) indexOfID(id []byte) int {
+	for i, m := range v.msgs {
+		if bytes.Equal(m.ID, id) {
+			return i
+		}
+	}
+	return -1
 }
 
 // messageReceived shows m if its conversation is open (and marks it read);
@@ -155,6 +234,7 @@ func (v *MainView) messageReceived(m store.Message) {
 		v.reloadContacts()
 		return
 	}
+	v.hideTyping()
 	if v.indexOfMsg(m.ID, store.DirIn) >= 0 {
 		return
 	}
@@ -167,10 +247,37 @@ func (v *MainView) messageDelivered(from peer.ID, id []byte) {
 	if from != v.selected {
 		return
 	}
-	if i := v.indexOfMsg(id, store.DirOut); i >= 0 {
+	if i := v.indexOfMsg(id, store.DirOut); i >= 0 && v.msgs[i].Status == store.StatusPending {
 		v.msgs[i].Status = store.StatusDelivered
 		v.convo.RefreshItem(i)
 	}
+}
+
+// messagesUpdated shows messages that were edited, deleted, reacted to or
+// read, if their conversation is open, without moving the scroll position.
+func (v *MainView) messagesUpdated(id peer.ID, ids [][]byte) {
+	if id != v.selected {
+		v.reloadContacts() // unread counts may have changed
+		return
+	}
+	msgs, err := v.api.History(v.ctx, id)
+	if err != nil {
+		v.showError(err)
+		return
+	}
+	v.msgs = msgs
+	// What is being replied to or edited may be gone, or changed.
+	if v.replyTo != nil && v.indexOfID(v.replyTo.ID) < 0 {
+		v.endCompose()
+	}
+	if v.editing != nil {
+		if i := v.indexOfID(v.editing.ID); i < 0 || v.msgs[i].Deleted {
+			v.endCompose()
+		}
+	}
+	v.measureAll()
+	v.convo.Refresh()
+	v.reloadContacts()
 }
 
 // widthLayout fills its single object and calls onWidth when its width
@@ -192,53 +299,141 @@ func (l *widthLayout) Layout(objs []fyne.CanvasObject, size fyne.Size) {
 func (l *widthLayout) MinSize(objs []fyne.CanvasObject) fyne.Size { return objs[0].MinSize() }
 
 // bubble is one message in the conversation. Outgoing bubbles sit on the
-// right, incoming ones on the left.
+// right, incoming ones on the left. Tapping it (or right-clicking) opens
+// its menu; links in it open in the browser.
 type bubble struct {
 	widget.BaseWidget
-	bg   *canvas.Rectangle
-	text *widget.Label
-	meta *widget.Label // "15:04", plus 🕓 or ✓ when outgoing
-	out  bool
+	bg        *canvas.Rectangle
+	quote     *widget.Label    // "» Ann: …" for a reply; hidden otherwise
+	text      *widget.RichText // the formatted text, or "This message was deleted"
+	meta      *widget.Label    // "15:04", "edited", plus 🕓, ✓ or ✓✓ when outgoing
+	reactions *widget.Label    // the emoji each side reacted with; hidden if none
+	out       bool
 
-	// shown identifies the message and status on display, so the list's
-	// frequent row updates skip re-setting (and re-wrapping) the same text.
+	msg    store.Message
+	onMenu func(m store.Message, at fyne.Position) // nil for the off-screen measurer
+
+	// shown identifies what is on display, so the list's frequent row
+	// updates skip re-setting (and re-wrapping) the same message.
 	shown string
 }
 
-func newBubble() *bubble {
+var (
+	_ fyne.Tappable          = (*bubble)(nil)
+	_ fyne.SecondaryTappable = (*bubble)(nil)
+)
+
+func newBubble(onMenu func(store.Message, fyne.Position)) *bubble {
 	b := &bubble{
-		bg:   canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground)),
-		text: widget.NewLabel(""),
-		meta: widget.NewLabelWithStyle("", fyne.TextAlignTrailing, fyne.TextStyle{Italic: true}),
+		bg:        canvas.NewRectangle(theme.Color(theme.ColorNameInputBackground)),
+		quote:     widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Italic: true}),
+		text:      widget.NewRichText(),
+		meta:      widget.NewLabelWithStyle("", fyne.TextAlignTrailing, fyne.TextStyle{Italic: true}),
+		reactions: widget.NewLabel(""),
+		onMenu:    onMenu,
 	}
 	b.bg.CornerRadius = theme.Size(theme.SizeNameInputRadius)
+	b.quote.SizeName = theme.SizeNameCaptionText
+	b.quote.Truncation = fyne.TextTruncateEllipsis
+	b.quote.Hide()
 	b.text.Wrapping = fyne.TextWrapWord
 	b.meta.SizeName = theme.SizeNameCaptionText
+	b.reactions.Hide()
 	b.ExtendBaseWidget(b)
 	return b
 }
 
-func (b *bubble) set(m store.Message) {
-	key := string(m.Direction) + string(m.Status) + string(m.ID)
+// set shows m; quote is its reply line ("" if it answers nothing).
+func (b *bubble) set(m store.Message, quote string) {
+	key := strings.Join([]string{string(m.Direction), string(m.Status), string(m.ID), m.Text,
+		m.EditedAt.String(), boolKey(m.Deleted), m.MyReaction, m.TheirReaction, quote}, "\x00")
 	if key == b.shown {
 		return
 	}
-	b.shown = key
+	b.shown, b.msg = key, m
 	b.out = m.Direction == store.DirOut
+
+	b.quote.SetText(quote)
+	showIf(b.quote, quote != "")
+	b.text.Segments = textSegments(m)
+	b.text.Refresh()
+
 	at, mark := m.ReceivedAt, ""
 	if b.out {
 		at, mark = m.SentAt, " 🕓"
-		if m.Status == store.StatusDelivered {
+		switch m.Status {
+		case store.StatusDelivered:
 			mark = " ✓"
+		case store.StatusRead:
+			mark = " ✓✓"
 		}
 	}
-	b.text.SetText(m.Text)
-	b.meta.SetText(at.Format("15:04") + mark)
+	meta := at.Format("15:04")
+	if !m.EditedAt.IsZero() && !m.Deleted {
+		meta = "edited · " + meta
+	}
+	if m.Deleted {
+		mark = ""
+	}
+	b.meta.SetText(meta + mark)
+
+	b.reactions.SetText(strings.TrimSpace(m.TheirReaction + " " + m.MyReaction))
+	showIf(b.reactions, b.reactions.Text != "")
 	b.Refresh()
 }
 
+// plainText is the text on display, without formatting (tests).
+func (b *bubble) plainText() string {
+	var sb strings.Builder
+	for _, s := range b.text.Segments {
+		sb.WriteString(s.Textual())
+	}
+	return sb.String()
+}
+
+// textSegments formats m's text: bold, italic and links.
+func textSegments(m store.Message) []widget.RichTextSegment {
+	if m.Deleted {
+		return []widget.RichTextSegment{&widget.TextSegment{Text: "This message was deleted", Style: widget.RichTextStyle{
+			Inline: true, ColorName: theme.ColorNamePlaceHolder, TextStyle: fyne.TextStyle{Italic: true},
+		}}}
+	}
+	var segs []widget.RichTextSegment
+	for _, s := range richtext.Parse(m.Text) {
+		if s.URL != "" {
+			if u, err := url.Parse(s.URL); err == nil {
+				segs = append(segs, &widget.HyperlinkSegment{Text: s.Text, URL: u})
+				continue
+			}
+		}
+		segs = append(segs, &widget.TextSegment{Text: s.Text, Style: widget.RichTextStyle{
+			Inline: true, TextStyle: fyne.TextStyle{Bold: s.Bold, Italic: s.Italic},
+		}})
+	}
+	return segs
+}
+
+func boolKey(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
+// Tapped opens the message's menu.
+func (b *bubble) Tapped(e *fyne.PointEvent) { b.openMenu(e) }
+
+// TappedSecondary (a right-click) opens the message's menu too.
+func (b *bubble) TappedSecondary(e *fyne.PointEvent) { b.openMenu(e) }
+
+func (b *bubble) openMenu(e *fyne.PointEvent) {
+	if b.onMenu != nil && b.msg.ID != nil {
+		b.onMenu(b.msg, e.AbsolutePosition)
+	}
+}
+
 func (b *bubble) CreateRenderer() fyne.WidgetRenderer {
-	return &bubbleRenderer{b: b, box: container.NewVBox(b.text, b.meta)}
+	return &bubbleRenderer{b: b, box: container.NewVBox(b.quote, b.text, b.reactions, b.meta)}
 }
 
 type bubbleRenderer struct {

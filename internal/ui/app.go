@@ -38,8 +38,14 @@ type MainView struct {
 	selected    peer.ID     // "" when no contact is selected
 	rowMeasurer *contactRow // off-screen row used to measure row heights
 
-	// Right pane (chat.go).
+	// Search (search.go).
+	search        *widget.Entry
+	searchResults *widget.List // the latest results dialog's list (tests)
+
+	// Right pane (chat.go, actions.go).
 	peerName   *widget.Label      // header: the selected contact's name, "" when none
+	typing     *widget.Label      // header: "typing…" while the contact types
+	typingGen  int                // bumped when typing is shown or hidden
 	detailsBtn *widget.Button     // header: opens the selected contact's details
 	drafts     map[peer.ID]string // unsent entry text of the contacts not selected
 	msgs       []store.Message    // conversation with selected, oldest first
@@ -50,6 +56,13 @@ type MainView struct {
 	entry      *widget.Entry
 	send       *widget.Button
 	sendErr    *widget.Label
+
+	// Replying or editing (actions.go): at most one is set.
+	replyTo      *store.Message
+	editing      *store.Message
+	composeBar   *fyne.Container // what is being replied to or edited, with a cancel button
+	composeLabel *widget.Label
+	chatPane     *fyne.Container // the right pane, laid out again when the bar or "typing…" shows or hides
 
 	// Status bar (status.go).
 	status *widget.Label
@@ -65,6 +78,7 @@ func NewMainView(api core.API, w fyne.Window) *MainView {
 	v.showFirstRun = func() { showFirstRun(api, w, v.refreshName) }
 	v.showDetails = func(id peer.ID, name string) { showDetails(api, w, id, name) }
 	v.buildContacts()
+	v.buildSearch()
 	v.buildChat()
 	v.buildStatus()
 	v.refreshName()
@@ -78,11 +92,12 @@ func (v *MainView) Content() fyne.CanvasObject {
 	myCard := widget.NewButton("My card", func() { call(v.showMyCard) })
 	addContact := widget.NewButton("Add contact", func() { call(v.showAddContact) })
 	header := container.NewBorder(nil, nil, nil, myCard, v.name)
-	left := container.NewBorder(header, addContact, nil, nil, v.contactList)
+	left := container.NewBorder(container.NewVBox(header, v.search), addContact, nil, nil, v.contactList)
 
-	bar := container.NewBorder(v.sendErr, nil, nil, v.send, v.entry)
-	top := container.NewBorder(nil, nil, nil, v.detailsBtn, v.peerName)
+	bar := container.NewBorder(container.NewVBox(v.sendErr, v.composeBar), nil, nil, v.send, v.entry)
+	top := container.NewBorder(nil, nil, nil, container.NewHBox(v.typing, v.detailsBtn), v.peerName)
 	right := container.NewBorder(top, bar, nil, nil, v.convoBox)
+	v.chatPane = right
 
 	split := container.NewHSplit(left, right)
 	split.Offset = 0.3
@@ -119,11 +134,22 @@ func (v *MainView) apply(ev any) {
 		v.messageReceived(e.Msg)
 	case event.MessageDelivered:
 		v.messageDelivered(e.Peer, e.ID)
+	case event.MessagesUpdated:
+		v.messagesUpdated(e.Peer, e.IDs)
+	case event.Typing:
+		v.showTyping(e.Peer)
 	case event.ContactChanged, event.Connectivity:
 		v.reloadContacts()
 	case event.Reachability:
 		v.reach = e.Status
 		v.updateStatus()
+	}
+}
+
+// relayout lays the right pane out again after part of it showed or hid.
+func (v *MainView) relayout() {
+	if v.chatPane != nil {
+		v.chatPane.Refresh()
 	}
 }
 

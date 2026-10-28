@@ -72,7 +72,11 @@ class Twocan(context: Context) {
                     scope.launch { refreshContacts() } // unread counts
                     _events.tryEmit(ev)
                 }
-                is NodeEvent.Delivered -> _events.tryEmit(ev)
+                is NodeEvent.Delivered, is NodeEvent.Typing -> _events.tryEmit(ev)
+                is NodeEvent.Updated -> {
+                    scope.launch { refreshContacts() } // a deletion can change unread counts
+                    _events.tryEmit(ev)
+                }
             }
         }
     }

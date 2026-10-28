@@ -43,7 +43,7 @@ func TestOpenTwiceRunsMigrationsOnce(t *testing.T) {
 	var n int
 	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM contacts`).Scan(&n))
 	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&n))
-	require.Equal(t, 1, n)
+	require.Equal(t, 2, n)
 }
 
 func TestContactUpsertGetList(t *testing.T) {
@@ -164,10 +164,15 @@ func TestUnreadAndMarkRead(t *testing.T) {
 	n, err := s.UnreadCount(ctx, p)
 	require.NoError(t, err)
 	require.Equal(t, 2, n)
-	require.NoError(t, s.MarkRead(ctx, p))
+	ids, err := s.MarkRead(ctx, p)
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{{1}, {2}}, ids, "the newly read incoming messages, oldest first")
 	n, err = s.UnreadCount(ctx, p)
 	require.NoError(t, err)
 	require.Equal(t, 0, n)
+	ids, err = s.MarkRead(ctx, p)
+	require.NoError(t, err)
+	require.Empty(t, ids, "nothing newly read")
 }
 
 func TestSettings(t *testing.T) {

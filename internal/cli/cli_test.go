@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"io"
 	"os"
@@ -49,6 +50,8 @@ type fakeAPI struct {
 	details  core.ContactDetails
 	check    p2p.CheckResult
 	pings    int
+	history  []store.Message
+	calls    []string // Reply, Edit, Delete, React and Search calls
 }
 
 func newFake(cs ...core.ContactView) *fakeAPI {
@@ -88,11 +91,42 @@ func (f *fakeAPI) Send(_ context.Context, to peer.ID, text string) (store.Messag
 	f.sent = append(f.sent, sentMsg{to, text})
 	return store.Message{ID: []byte{1, 2, 3, 4, 5, 6}, PeerID: to, Text: text}, nil
 }
-func (f *fakeAPI) History(context.Context, peer.ID) ([]store.Message, error) { return nil, nil }
-func (f *fakeAPI) MarkRead(context.Context, peer.ID) error                   { return nil }
-func (f *fakeAPI) Subscribe() (<-chan any, func())                           { return f.events, func() {} }
-func (f *fakeAPI) Reachability() network.Reachability                        { return network.ReachabilityUnknown }
-func (f *fakeAPI) Stop() error                                               { return nil }
+func (f *fakeAPI) History(context.Context, peer.ID) ([]store.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.history, nil
+}
+func (f *fakeAPI) Reply(_ context.Context, to peer.ID, replyTo []byte, text string) (store.Message, error) {
+	f.record("reply %x %s", replyTo, text)
+	return store.Message{ID: []byte{9, 9, 9, 9}, PeerID: to, Text: text, ReplyTo: replyTo}, nil
+}
+func (f *fakeAPI) Edit(_ context.Context, _ peer.ID, id []byte, text string) error {
+	f.record("edit %x %s", id, text)
+	return nil
+}
+func (f *fakeAPI) Delete(_ context.Context, _ peer.ID, id []byte, all bool) error {
+	f.record("delete %x all=%v", id, all)
+	return nil
+}
+func (f *fakeAPI) React(_ context.Context, _ peer.ID, id []byte, emoji string) error {
+	f.record("react %x %q", id, emoji)
+	return nil
+}
+func (f *fakeAPI) Typing(peer.ID) {}
+func (f *fakeAPI) Search(_ context.Context, q string) ([]store.Message, error) {
+	f.record("search %s", q)
+	return f.history, nil
+}
+
+func (f *fakeAPI) record(format string, args ...any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fmt.Sprintf(format, args...))
+}
+func (f *fakeAPI) MarkRead(context.Context, peer.ID) error { return nil }
+func (f *fakeAPI) Subscribe() (<-chan any, func())         { return f.events, func() {} }
+func (f *fakeAPI) Reachability() network.Reachability      { return network.ReachabilityUnknown }
+func (f *fakeAPI) Stop() error                             { return nil }
 func (f *fakeAPI) ContactDetails(context.Context, peer.ID) (core.ContactDetails, error) {
 	return f.details, nil
 }
@@ -239,4 +273,71 @@ func TestCLICheckPrintsFinishedStepsAndVerdict(t *testing.T) {
 	require.Contains(t, out, "checking the connection to Ann")
 	require.Contains(t, out, "  ✓ Helper: Connected to the helper.\n  ✗ Direct connection: No answer.\nverdict: Couldn't connect.\n")
 	require.NotContains(t, out, "… Helper", "running steps are not printed")
+}
+
+func TestCLIMessageCommands(t *testing.T) {
+	ann := newPeer(t)
+	f := newFake(view(ann, "Ann"))
+	at := time.Date(2026, 10, 28, 15, 4, 0, 0, time.Local)
+	f.history = []store.Message{
+		{ID: []byte{0, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0x01}, PeerID: ann, Direction: store.DirIn, Text: "hike?", ReceivedAt: at, TheirReaction: "", MyReaction: "👍"},
+		{ID: []byte{0, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0x02}, PeerID: ann, Direction: store.DirOut, Text: "yes", SentAt: at,
+			Status: store.StatusRead, EditedAt: at, ReplyTo: []byte{0, 0, 0, 0, 0xaa, 0xbb, 0xcc, 0x01}, TheirReaction: "❤️"},
+		{ID: []byte{0, 0, 0, 0, 0x11, 0x22, 0x33, 0x44}, PeerID: ann, Direction: store.DirOut, SentAt: at, Status: store.StatusDelivered, Deleted: true},
+	}
+	out := runScript(t, f, strings.Join([]string{
+		"/history ann",
+		"/reply ann aabbcc01 sure thing",
+		"/edit ann aabbcc02 yes!",
+		"/delete ann 11223344 all",
+		"/delete ann 11223344",
+		"/delete ann 11223344 everyone",
+		"/react ann aabbcc01 ❤️",
+		"/react ann aabbcc01 -",
+		"/react ann aabbcc 👍",
+		"/edit ann ffff nope",
+		"/search hike",
+	}, "\n"))
+	for _, want := range []string{
+		"[15:04] aabbcc01 Ann: hike? [me 👍]",
+		"[15:04] aabbcc02 me (re aabbcc01): yes (read, edited) [them ❤️]",
+		"[15:04] 11223344 me: (deleted)",
+		"queued 09090909",
+		"usage: /delete <who> <id> [all]",
+		`"aabbcc" matches 2 messages`,
+		`error: no message "ffff" in this conversation (see /history)`,
+		"Ann: [15:04] aabbcc01 Ann: hike? [me 👍]",
+	} {
+		require.Contains(t, out, want)
+	}
+	require.Equal(t, []string{
+		"reply 00000000aabbcc01 sure thing",
+		"edit 00000000aabbcc02 yes!",
+		"delete 0000000011223344 all=true",
+		"delete 0000000011223344 all=false",
+		`react 00000000aabbcc01 "❤️"`,
+		`react 00000000aabbcc01 ""`,
+		"search hike",
+	}, f.calls)
+}
+
+func TestCLIShowsUpdatesAndTyping(t *testing.T) {
+	ann := newPeer(t)
+	f := newFake(view(ann, "Ann"))
+	f.history = []store.Message{{ID: []byte{1, 2, 3, 4}, PeerID: ann, Direction: store.DirOut, Text: "hi", Status: store.StatusRead}}
+	f.events <- event.Typing{Peer: ann}
+	f.events <- event.MessagesUpdated{Peer: ann, IDs: [][]byte{{1, 2, 3, 4}}}
+	f.events <- event.MessageReceived{Msg: store.Message{ID: []byte{5, 6, 7, 8}, PeerID: ann, Text: "yo", ReplyTo: []byte{1, 2, 3, 4}}}
+	var out safeBuf
+	in, w := io.Pipe()
+	done := make(chan error)
+	go func() { done <- Run(context.Background(), f, in, &out) }()
+	require.Eventually(t, func() bool {
+		s := out.String()
+		return strings.Contains(s, "* Ann is typing…") &&
+			strings.Contains(s, "~ [") && strings.Contains(s, "01020304 me: hi (read)") &&
+			strings.Contains(s, "<- Ann (re 01020304): yo [05060708]")
+	}, 5*time.Second, 10*time.Millisecond, "output: %s", out.String())
+	_, _ = io.WriteString(w, "/quit\n")
+	require.NoError(t, <-done)
 }

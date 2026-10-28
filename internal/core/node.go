@@ -98,6 +98,12 @@ type API interface {
 	RenameContact(ctx context.Context, id peer.ID, nickname string) error
 	Contacts(ctx context.Context) ([]ContactView, error)
 	Send(ctx context.Context, to peer.ID, text string) (store.Message, error)
+	Reply(ctx context.Context, to peer.ID, replyTo []byte, text string) (store.Message, error)
+	Edit(ctx context.Context, id peer.ID, msgID []byte, text string) error
+	Delete(ctx context.Context, id peer.ID, msgID []byte, forEveryone bool) error
+	React(ctx context.Context, id peer.ID, msgID []byte, emoji string) error
+	Typing(id peer.ID)
+	Search(ctx context.Context, query string) ([]store.Message, error)
 	History(ctx context.Context, id peer.ID) ([]store.Message, error)
 	MarkRead(ctx context.Context, id peer.ID) error
 	Subscribe() (<-chan any, func())
@@ -454,7 +460,37 @@ func (n *Node) Contacts(ctx context.Context) ([]ContactView, error) {
 
 // Send queues text for an accepted contact and starts delivering it.
 func (n *Node) Send(ctx context.Context, to peer.ID, text string) (store.Message, error) {
-	return n.chat.Send(ctx, to, text)
+	return n.chat.Send(ctx, to, text, nil)
+}
+
+// Reply is Send, answering message replyTo of the same conversation.
+func (n *Node) Reply(ctx context.Context, to peer.ID, replyTo []byte, text string) (store.Message, error) {
+	return n.chat.Send(ctx, to, text, replyTo)
+}
+
+// Edit replaces the text of one of our messages, on both sides.
+func (n *Node) Edit(ctx context.Context, id peer.ID, msgID []byte, text string) error {
+	return n.chat.Edit(ctx, id, msgID, text)
+}
+
+// Delete deletes a message: for everyone (our own only) or from this
+// device only.
+func (n *Node) Delete(ctx context.Context, id peer.ID, msgID []byte, forEveryone bool) error {
+	return n.chat.Delete(ctx, id, msgID, forEveryone)
+}
+
+// React sets our reaction (an emoji; "" removes it) to a message.
+func (n *Node) React(ctx context.Context, id peer.ID, msgID []byte, emoji string) error {
+	return n.chat.React(ctx, id, msgID, emoji)
+}
+
+// Typing tells a connected contact we are typing (throttled; best effort).
+func (n *Node) Typing(id peer.ID) { n.chat.Typing(id) }
+
+// Search finds messages in every conversation containing all the words of
+// query, newest first.
+func (n *Node) Search(ctx context.Context, query string) ([]store.Message, error) {
+	return n.st.Search(ctx, query)
 }
 
 // History returns the conversation with id, oldest first.
@@ -462,9 +498,9 @@ func (n *Node) History(ctx context.Context, id peer.ID) ([]store.Message, error)
 	return n.st.History(ctx, id)
 }
 
-// MarkRead marks every message from id as read.
+// MarkRead marks every message from id as read and sends a read receipt.
 func (n *Node) MarkRead(ctx context.Context, id peer.ID) error {
-	return n.st.MarkRead(ctx, id)
+	return n.chat.MarkRead(ctx, id)
 }
 
 // Subscribe returns a channel of event.* values and its cancel func.
