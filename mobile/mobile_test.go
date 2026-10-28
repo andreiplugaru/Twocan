@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"twocan/internal/core"
+	"twocan/internal/event"
 )
 
 // events collects a Listener's events.
@@ -177,4 +178,70 @@ func TestCheckConnectionUnknownContact(t *testing.T) {
 func TestEventJSONSkipsUnknown(t *testing.T) {
 	_, ok := eventJSON(struct{}{})
 	assert.False(t, ok)
+}
+
+func TestChatFeatures(t *testing.T) {
+	ana, anaEv := startNode(t, "Ana")
+	ben, benEv := startNode(t, "Ben")
+	card, err := ben.MyCard()
+	require.NoError(t, err)
+	require.NoError(t, ana.AddContact(card))
+	benEv.waitFor(t, "contacts", func(map[string]any) bool { return len(contactsOf(t, ben)) == 1 })
+	require.NoError(t, ben.Accept(ana.PeerID()))
+	anaEv.waitFor(t, "contacts", func(map[string]any) bool { return contactsOf(t, ana)[0].State == "accepted" })
+
+	js, err := ana.Send(ben.PeerID(), "hike on *saturday*?")
+	require.NoError(t, err)
+	var q messageJSON
+	require.NoError(t, json.Unmarshal([]byte(js), &q))
+	benEv.waitFor(t, "message", nil)
+
+	js, err = ben.Reply(ana.PeerID(), q.ID, "yes")
+	require.NoError(t, err)
+	var r messageJSON
+	require.NoError(t, json.Unmarshal([]byte(js), &r))
+	require.Equal(t, q.ID, r.ReplyTo)
+
+	require.NoError(t, ben.MarkRead(ana.PeerID()))
+	anaEv.waitFor(t, "updated", func(m map[string]any) bool { return m["ids"].([]any)[0] == q.ID })
+	require.NoError(t, ana.Edit(ben.PeerID(), q.ID, "hike on sunday?"))
+	require.NoError(t, ana.React(ben.PeerID(), r.ID, "👍"))
+	benEv.waitFor(t, "updated", func(m map[string]any) bool { return m["ids"].([]any)[0] == r.ID })
+
+	histJS, err := ana.History(ben.PeerID())
+	require.NoError(t, err)
+	var hist []messageJSON
+	require.NoError(t, json.Unmarshal([]byte(histJS), &hist))
+	require.Equal(t, "read", hist[0].Status)
+	require.Equal(t, "hike on sunday?", hist[0].Text)
+	require.NotZero(t, hist[0].EditedAt)
+	require.Equal(t, "👍", hist[1].MyReaction)
+
+	found, err := ben.Search("sunday")
+	require.NoError(t, err)
+	var res []messageJSON
+	require.NoError(t, json.Unmarshal([]byte(found), &res))
+	require.Len(t, res, 1)
+	require.Equal(t, q.ID, res[0].ID)
+
+	require.NoError(t, ana.Delete(ben.PeerID(), q.ID, true))
+	require.Equal(t, "You can only edit or delete for everyone your own messages",
+		ben.Delete(ana.PeerID(), q.ID, true).Error())
+	assert.ErrorIs(t, ana.Edit(ben.PeerID(), "zz", "x"), errBadMessageID)
+}
+
+func TestFormat(t *testing.T) {
+	assert.JSONEq(t, `[{"text":"a ","bold":false,"italic":false,"url":""},
+		{"text":"b","bold":true,"italic":false,"url":""},
+		{"text":" ","bold":false,"italic":false,"url":""},
+		{"text":"www.x.y","bold":false,"italic":false,"url":"https://www.x.y"}]`, Format("a *b* www.x.y"))
+	assert.Equal(t, "[]", Format(""))
+}
+
+func TestEventJSONUpdatesAndTyping(t *testing.T) {
+	js, ok := eventJSON(event.MessagesUpdated{Peer: "", IDs: [][]byte{{1, 2}}})
+	require.True(t, ok)
+	assert.JSONEq(t, `{"type":"updated","peer":"","ids":["0102"]}`, js)
+	_, ok = eventJSON(event.Typing{})
+	require.True(t, ok)
 }

@@ -29,6 +29,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 	manet "github.com/multiformats/go-multiaddr/net"
 
+	"twocan/internal/addrshare"
 	"twocan/internal/chat"
 	"twocan/internal/contacts"
 	"twocan/internal/event"
@@ -97,6 +98,12 @@ type API interface {
 	RenameContact(ctx context.Context, id peer.ID, nickname string) error
 	Contacts(ctx context.Context) ([]ContactView, error)
 	Send(ctx context.Context, to peer.ID, text string) (store.Message, error)
+	Reply(ctx context.Context, to peer.ID, replyTo []byte, text string) (store.Message, error)
+	Edit(ctx context.Context, id peer.ID, msgID []byte, text string) error
+	Delete(ctx context.Context, id peer.ID, msgID []byte, forEveryone bool) error
+	React(ctx context.Context, id peer.ID, msgID []byte, emoji string) error
+	Typing(id peer.ID)
+	Search(ctx context.Context, query string) ([]store.Message, error)
 	History(ctx context.Context, id peer.ID) ([]store.Message, error)
 	MarkRead(ctx context.Context, id peer.ID) error
 	Subscribe() (<-chan any, func())
@@ -120,6 +127,8 @@ type Node struct {
 	bus      *event.Bus
 	contacts *contacts.Service
 	chat     *chat.Service
+	addrs    *addrshare.Service
+	dialer   directDialer // r, if it can dial without the relay (nil under startWith in tests)
 
 	// Set by Start only (nil under startWith): the libp2p node and the
 	// cancel func of its lifetime context.
@@ -130,10 +139,11 @@ type Node struct {
 	loops *svc.Tracker
 	reach atomic.Int32 // network.Reachability
 
-	mu        sync.Mutex // guards peers, health and nextSweep
+	mu        sync.Mutex // guards peers, health, nextSweep and leaving
 	peers     map[peer.ID]*peerState
 	health    map[peer.ID]*health
-	nextSweep time.Time // when the presence sweep runs next
+	nextSweep time.Time               // when the presence sweep runs next
+	leaving   map[peer.ID]*leaveState // contacts we try to move off the relay
 
 	stopOnce sync.Once
 	stopErr  error
@@ -228,6 +238,9 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	if iv.presence == 0 {
 		iv.presence = defaultPresence
 	}
+	if iv.direct == 0 {
+		iv.direct = defaultDirect
+	}
 	cs, err := st.ListContacts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("core: list contacts: %w", err)
@@ -264,17 +277,25 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 		loops:    svc.NewTracker(),
 		peers:    make(map[peer.ID]*peerState),
 		health:   make(map[peer.ID]*health),
+		leaving:  make(map[peer.ID]*leaveState),
 	}
 	n.diag, _ = r.(diagnoser)
+	n.dialer, _ = r.(directDialer)
 	n.reach.Store(int32(network.ReachabilityUnknown))
 	n.contacts = contacts.New(h, st, r, n.bus, n.DisplayName)
 	n.chat = chat.New(h, st, r, n.bus)
+	n.addrs = addrshare.New(h, st, n.contactAddrsArrived)
+	if src, ok := r.(addrSource); ok {
+		n.addrs.SetOwnAddrs(src.ShareableAddrs)
+	}
 	n.contacts.SetLogger(log)
 	n.chat.SetLogger(log)
+	n.addrs.SetLogger(log)
 	// Subscribe before the services start so no ContactChanged is missed.
 	busEvents, cancelBus := n.bus.Subscribe()
 	n.contacts.Start()
 	n.chat.Start()
+	n.addrs.Start()
 	n.loops.Go(func(ctx context.Context) {
 		defer sub.Close()
 		defer cancelBus()
@@ -290,6 +311,7 @@ func (n *Node) Stop() error {
 		n.loops.Close()
 		n.contacts.Close()
 		n.chat.Close()
+		n.addrs.Close()
 		var errs []error
 		if n.pn != nil {
 			errs = append(errs, n.pn.Close())
@@ -438,7 +460,37 @@ func (n *Node) Contacts(ctx context.Context) ([]ContactView, error) {
 
 // Send queues text for an accepted contact and starts delivering it.
 func (n *Node) Send(ctx context.Context, to peer.ID, text string) (store.Message, error) {
-	return n.chat.Send(ctx, to, text)
+	return n.chat.Send(ctx, to, text, nil)
+}
+
+// Reply is Send, answering message replyTo of the same conversation.
+func (n *Node) Reply(ctx context.Context, to peer.ID, replyTo []byte, text string) (store.Message, error) {
+	return n.chat.Send(ctx, to, text, replyTo)
+}
+
+// Edit replaces the text of one of our messages, on both sides.
+func (n *Node) Edit(ctx context.Context, id peer.ID, msgID []byte, text string) error {
+	return n.chat.Edit(ctx, id, msgID, text)
+}
+
+// Delete deletes a message: for everyone (our own only) or from this
+// device only.
+func (n *Node) Delete(ctx context.Context, id peer.ID, msgID []byte, forEveryone bool) error {
+	return n.chat.Delete(ctx, id, msgID, forEveryone)
+}
+
+// React sets our reaction (an emoji; "" removes it) to a message.
+func (n *Node) React(ctx context.Context, id peer.ID, msgID []byte, emoji string) error {
+	return n.chat.React(ctx, id, msgID, emoji)
+}
+
+// Typing tells a connected contact we are typing (throttled; best effort).
+func (n *Node) Typing(id peer.ID) { n.chat.Typing(id) }
+
+// Search finds messages in every conversation containing all the words of
+// query, newest first.
+func (n *Node) Search(ctx context.Context, query string) ([]store.Message, error) {
+	return n.st.Search(ctx, query)
 }
 
 // History returns the conversation with id, oldest first.
@@ -446,9 +498,9 @@ func (n *Node) History(ctx context.Context, id peer.ID) ([]store.Message, error)
 	return n.st.History(ctx, id)
 }
 
-// MarkRead marks every message from id as read.
+// MarkRead marks every message from id as read and sends a read receipt.
 func (n *Node) MarkRead(ctx context.Context, id peer.ID) error {
-	return n.st.MarkRead(ctx, id)
+	return n.chat.MarkRead(ctx, id)
 }
 
 // Subscribe returns a channel of event.* values and its cancel func.

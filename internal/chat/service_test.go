@@ -188,7 +188,7 @@ func TestSendDelivered(t *testing.T) {
 	bEvents, cancelB := b.bus.Subscribe()
 	defer cancelB()
 
-	m, err := a.svc.Send(t.Context(), b.id(), "hi")
+	m, err := a.svc.Send(t.Context(), b.id(), "hi", nil)
 	require.NoError(t, err)
 	require.Len(t, m.ID, 16)
 	require.Equal(t, b.id(), m.PeerID)
@@ -228,7 +228,7 @@ func TestLogsDeliveryWithoutMessageText(t *testing.T) {
 	defer cancelA()
 
 	const secret = "secret-text-7f3a"
-	m, err := a.svc.Send(t.Context(), b.id(), secret)
+	m, err := a.svc.Send(t.Context(), b.id(), secret, nil)
 	require.NoError(t, err)
 	waitEvent(t, aEvents, func(event.MessageDelivered) bool { return true })
 	require.Eventually(t, func() bool {
@@ -260,20 +260,20 @@ func TestSendValidation(t *testing.T) {
 	_, a, b := pair(t)
 	ctx := t.Context()
 
-	_, err := a.svc.Send(ctx, b.id(), "   \n")
+	_, err := a.svc.Send(ctx, b.id(), "   \n", nil)
 	require.ErrorIs(t, err, ErrEmpty)
-	_, err = a.svc.Send(ctx, b.id(), "")
+	_, err = a.svc.Send(ctx, b.id(), "", nil)
 	require.ErrorIs(t, err, ErrEmpty)
-	_, err = a.svc.Send(ctx, b.id(), strings.Repeat("x", MaxTextBytes+1))
+	_, err = a.svc.Send(ctx, b.id(), strings.Repeat("x", MaxTextBytes+1), nil)
 	require.ErrorIs(t, err, ErrTooLong)
-	_, err = a.svc.Send(ctx, b.id(), "bad \xff text")
+	_, err = a.svc.Send(ctx, b.id(), "bad \xff text", nil)
 	require.ErrorIs(t, err, ErrInvalidUTF8)
 
-	_, err = a.svc.Send(ctx, randomPeer(t), "hi")
+	_, err = a.svc.Send(ctx, randomPeer(t), "hi", nil)
 	require.ErrorIs(t, err, ErrNotContact)
 	pendingPeer := randomPeer(t)
 	a.setContact(t, pendingPeer, store.StatePendingOutgoing)
-	_, err = a.svc.Send(ctx, pendingPeer, "hi")
+	_, err = a.svc.Send(ctx, pendingPeer, "hi", nil)
 	require.ErrorIs(t, err, ErrNotContact)
 	require.Empty(t, a.history(t, pendingPeer))
 
@@ -281,7 +281,7 @@ func TestSendValidation(t *testing.T) {
 	require.Empty(t, a.history(t, b.id()))
 
 	big := strings.Repeat("y", MaxTextBytes)
-	m, err := a.svc.Send(ctx, b.id(), big)
+	m, err := a.svc.Send(ctx, b.id(), big, nil)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		hb := b.history(t, a.id())
@@ -296,7 +296,7 @@ func TestOfflineQueueThenFlush(t *testing.T) {
 	texts := []string{"one", "two", "three"}
 	var ids [][]byte
 	for _, txt := range texts {
-		m, err := a.svc.Send(t.Context(), b.id(), txt)
+		m, err := a.svc.Send(t.Context(), b.id(), txt, nil)
 		require.NoError(t, err)
 		ids = append(ids, m.ID)
 	}
@@ -414,7 +414,7 @@ func TestHandlerRejectsInvalidFrames(t *testing.T) {
 		})
 	}
 
-	m, err := a.svc.Send(t.Context(), b.id(), "still works")
+	m, err := a.svc.Send(t.Context(), b.id(), "still works", nil)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		hb := b.history(t, a.id())
@@ -431,7 +431,7 @@ func TestFlushInterruptedThenResumed(t *testing.T) {
 
 	goOffline(t, mn, a, b)
 	for i := range 5 {
-		_, err := a.svc.Send(t.Context(), b.id(), strings.Repeat("m", i+1))
+		_, err := a.svc.Send(t.Context(), b.id(), strings.Repeat("m", i+1), nil)
 		require.NoError(t, err)
 	}
 	a.svc.tasks.Wait() // let the background flushes started by Send fail first
@@ -479,7 +479,7 @@ func TestReceiverStoreFailureNotAcked(t *testing.T) {
 	defer cancel()
 	failMessageInserts(t, b)
 
-	m, err := a.svc.Send(t.Context(), b.id(), "not acked")
+	m, err := a.svc.Send(t.Context(), b.id(), "not acked", nil)
 	require.NoError(t, err)
 	a.svc.tasks.Wait() // the background flush fails too
 	require.Error(t, a.svc.Flush(t.Context(), b.id()))

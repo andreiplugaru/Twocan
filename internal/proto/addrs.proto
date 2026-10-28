@@ -1,0 +1,9 @@
+syntax = "proto3";
+package twocan;
+option go_package = "twocan/internal/proto;pb";
+
+// Addrs is a peer's own direct addresses, LAN ones included, sent to a
+// contact over /twocan/addrs/1.0.0.
+message Addrs {
+  repeated bytes addrs = 1;
+}

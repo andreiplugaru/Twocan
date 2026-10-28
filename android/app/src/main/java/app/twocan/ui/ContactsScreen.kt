@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -65,6 +66,7 @@ fun ContactsScreen(
     onMyCard: () -> Unit,
     onAdd: () -> Unit,
     onSettings: () -> Unit,
+    onSearch: () -> Unit,
 ) {
     val contacts by twocan.contacts.collectAsStateWithLifecycle()
     val name by twocan.displayName.collectAsStateWithLifecycle()
@@ -90,6 +92,7 @@ fun ContactsScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onSearch) { Icon(Icons.Default.Search, contentDescription = "Search messages") }
                     IconButton(onClick = onMyCard) { Icon(Icons.Default.Person, contentDescription = "My card") }
                     IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
                 },

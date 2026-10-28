@@ -184,10 +184,12 @@ func TestKillMinus9LosesNothing(t *testing.T) {
 	time.Sleep(time.Second)
 	hist := b.snapshot()[from:]
 	for i := 0; i < total; i++ {
-		needle := fmt.Sprintf("alice: m-%03d (", i)
+		// History lines end with the text for incoming messages, e.g.
+		// "[15:04] 3fa2b1c0 alice: m-007".
+		needle := fmt.Sprintf(" alice: m-%03d", i)
 		n := 0
 		for _, l := range hist {
-			if strings.Contains(l, needle) {
+			if strings.HasSuffix(strings.TrimSpace(l), needle) {
 				n++
 			}
 		}

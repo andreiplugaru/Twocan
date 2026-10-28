@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -39,7 +40,12 @@ const helpText = `commands:
   /rename <who> <nickname>    set a local nickname
   /contacts                   list contacts
   /msg <who> <text>           send a message
-  /history <who>              show the conversation
+  /history <who>              show the conversation (each message with its <id>)
+  /reply <who> <id> <text>    answer a message
+  /edit <who> <id> <text>     change one of your messages
+  /delete <who> <id> [all]    delete a message for you, or with "all" for everyone (yours only)
+  /react <who> <id> <emoji>   react to a message ("-" removes your reaction)
+  /search <words>             find messages in every conversation
   /stats <who>                in/out/pending message counts
   /info <who>                 connection details: how you're connected, last problem, saved addresses
   /check <who>                check step by step whether and how they can be reached
@@ -170,6 +176,35 @@ func (c *client) handle(line string) (quit bool) {
 		c.cmdMsg(rest)
 	case "/history":
 		c.cmdHistory(rest)
+	case "/reply":
+		c.withMessage(rest, "/reply <who> <id> <text>", true, func(v core.ContactView, m store.Message, text string) error {
+			sent, err := c.api.Reply(c.ctx, v.PeerID, m.ID, text)
+			if err == nil {
+				c.say("queued %s", shortID(sent.ID))
+			}
+			return err
+		})
+	case "/edit":
+		c.withMessage(rest, "/edit <who> <id> <text>", true, func(v core.ContactView, m store.Message, text string) error {
+			return c.okIf(c.api.Edit(c.ctx, v.PeerID, m.ID, text))
+		})
+	case "/delete":
+		c.withMessage(rest, "/delete <who> <id> [all]", false, func(v core.ContactView, m store.Message, arg string) error {
+			if arg != "" && arg != "all" {
+				c.say("usage: /delete <who> <id> [all]")
+				return nil
+			}
+			return c.okIf(c.api.Delete(c.ctx, v.PeerID, m.ID, arg == "all"))
+		})
+	case "/react":
+		c.withMessage(rest, "/react <who> <id> <emoji>", true, func(v core.ContactView, m store.Message, emoji string) error {
+			if emoji == "-" {
+				emoji = ""
+			}
+			return c.okIf(c.api.React(c.ctx, v.PeerID, m.ID, emoji))
+		})
+	case "/search":
+		c.cmdSearch(rest)
 	case "/stats":
 		c.cmdStats(rest)
 	case "/info":
@@ -354,11 +389,7 @@ func (c *client) cmdHistory(who string) {
 		return
 	}
 	for _, m := range msgs {
-		sender, at := "me", m.SentAt
-		if m.Direction == store.DirIn {
-			sender, at = v.Name(), m.ReceivedAt
-		}
-		c.say("[%s] %s: %s (%s)", at.Format("15:04"), sender, m.Text, m.Status)
+		c.say("%s", c.messageLine(v.Name(), m))
 	}
 	if err := c.api.MarkRead(c.ctx, v.PeerID); err != nil {
 		c.fail(err)
@@ -450,7 +481,15 @@ func (c *client) cmdCheck(who string) {
 func (c *client) printEvent(e any) {
 	switch e := e.(type) {
 	case event.MessageReceived:
-		c.say("<- %s: %s", c.nameOf(e.Msg.PeerID), e.Msg.Text)
+		re := ""
+		if e.Msg.ReplyTo != nil {
+			re = " (re " + shortID(e.Msg.ReplyTo) + ")"
+		}
+		c.say("<- %s%s: %s [%s]", c.nameOf(e.Msg.PeerID), re, e.Msg.Text, shortID(e.Msg.ID))
+	case event.MessagesUpdated:
+		c.printUpdated(e)
+	case event.Typing:
+		c.say("* %s is typing…", c.nameOf(e.Peer))
 	case event.MessageDelivered:
 		c.say("✓ delivered %s", shortID(e.ID))
 	case event.ContactChanged:
@@ -501,6 +540,138 @@ func reachText(r network.Reachability) string {
 		return "private"
 	}
 	return "unknown"
+}
+
+// withMessage resolves "<who> <id> <rest>" to a contact and one of the
+// messages /history shows, then calls fn. needRest requires <rest>.
+func (c *client) withMessage(rest, usage string, needRest bool, fn func(core.ContactView, store.Message, string) error) {
+	fields := strings.SplitN(rest, " ", 3)
+	tail := ""
+	if len(fields) == 3 {
+		tail = strings.TrimSpace(fields[2])
+	}
+	if len(fields) < 2 || fields[0] == "" || fields[1] == "" || (needRest && tail == "") {
+		c.say("usage: %s", usage)
+		return
+	}
+	v, err := c.resolve(fields[0])
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	m, err := c.findMessage(v.PeerID, fields[1])
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	if err := fn(v, m, tail); err != nil {
+		c.fail(err)
+	}
+}
+
+// findMessage finds the message in the conversation with id whose short ID
+// (as /history prints it) starts with ref.
+func (c *client) findMessage(id peer.ID, ref string) (store.Message, error) {
+	msgs, err := c.api.History(c.ctx, id)
+	if err != nil {
+		return store.Message{}, err
+	}
+	ref = strings.ToLower(ref)
+	var found []store.Message
+	for _, m := range msgs {
+		if strings.HasPrefix(shortID(m.ID), ref) {
+			found = append(found, m)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return store.Message{}, fmt.Errorf("no message %q in this conversation (see /history)", ref)
+	case 1:
+		return found[0], nil
+	}
+	return store.Message{}, fmt.Errorf("%q matches %d messages", ref, len(found))
+}
+
+// okIf prints "ok" when err is nil, and returns err.
+func (c *client) okIf(err error) error {
+	if err == nil {
+		c.say("ok")
+	}
+	return err
+}
+
+// messageLine renders one message as /history and /search print it, e.g.
+// "[15:04] 3fa2b1c0 me (re 9e01ab22): see you (read, edited) [them ❤️]".
+func (c *client) messageLine(name string, m store.Message) string {
+	sender, at, status := "me", m.SentAt, string(m.Status)
+	if m.Direction == store.DirIn {
+		sender, at, status = name, m.ReceivedAt, ""
+	}
+	if m.ReplyTo != nil {
+		sender += " (re " + shortID(m.ReplyTo) + ")"
+	}
+	text := m.Text
+	if m.Deleted {
+		text, status = "(deleted)", ""
+	}
+	var notes []string
+	if status != "" {
+		notes = append(notes, status)
+	}
+	if !m.EditedAt.IsZero() && !m.Deleted {
+		notes = append(notes, "edited")
+	}
+	line := fmt.Sprintf("[%s] %s %s: %s", at.Format("15:04"), shortID(m.ID), sender, text)
+	if len(notes) > 0 {
+		line += " (" + strings.Join(notes, ", ") + ")"
+	}
+	var reactions []string
+	if m.MyReaction != "" {
+		reactions = append(reactions, "me "+m.MyReaction)
+	}
+	if m.TheirReaction != "" {
+		reactions = append(reactions, "them "+m.TheirReaction)
+	}
+	if len(reactions) > 0 {
+		line += " [" + strings.Join(reactions, ", ") + "]"
+	}
+	return line
+}
+
+func (c *client) cmdSearch(query string) {
+	if query == "" {
+		c.say("usage: /search <words>")
+		return
+	}
+	found, err := c.api.Search(c.ctx, query)
+	if err != nil {
+		c.fail(err)
+		return
+	}
+	if len(found) == 0 {
+		c.say("nothing found")
+		return
+	}
+	for _, m := range found {
+		name := c.nameOf(m.PeerID)
+		c.say("%s: %s", name, c.messageLine(name, m))
+	}
+}
+
+// printUpdated shows the messages an update changed, as they are now.
+func (c *client) printUpdated(e event.MessagesUpdated) {
+	msgs, err := c.api.History(c.ctx, e.Peer)
+	if err != nil {
+		return
+	}
+	name := c.nameOf(e.Peer)
+	for _, id := range e.IDs {
+		for _, m := range msgs {
+			if bytes.Equal(m.ID, id) {
+				c.say("~ %s", c.messageLine(name, m))
+			}
+		}
+	}
 }
 
 // shortPeer is the last 6 characters of a peer ID, as Contact.Name uses.

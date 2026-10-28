@@ -12,6 +12,7 @@ import (
 
 	"twocan/internal/chat"
 	"twocan/internal/event"
+	"twocan/internal/p2p"
 	"twocan/internal/store"
 )
 
@@ -23,13 +24,46 @@ const (
 	// Retry backoff per peer: starts at backoffMin, doubles, caps at backoffMax.
 	backoffMin = 5 * time.Second
 	backoffMax = 5 * time.Minute
+	// defaultDirect is how often contacts connected only through the relay
+	// are looked at, and how long after a failed direct dial the next one
+	// is due. The wait doubles after each failure, up to maxDirectFactor
+	// times this: on mobile data most direct dials fail, and each costs
+	// battery and counts towards libp2p's "black hole" giving up on UDP
+	// and IPv6.
+	defaultDirect   = time.Minute
+	maxDirectFactor = 30
+	// directTimeout bounds one such dial.
+	directTimeout = 30 * time.Second
 	// maxSavedAddrs caps the addrs stored for a contact on connect.
 	maxSavedAddrs = 8
 )
 
 // intervals are the loop periods; tests shorten them (zero: default).
 type intervals struct {
-	tick, presence time.Duration
+	tick, presence, direct time.Duration
+}
+
+// directDialer is what moving a contact off the relay needs from the libp2p
+// node; *p2p.Node implements it.
+type directDialer interface {
+	DialDirect(ctx context.Context, id peer.ID) error
+}
+
+var _ directDialer = (*p2p.Node)(nil)
+
+// addrSource gives the addresses we send contacts; *p2p.Node implements it.
+type addrSource interface {
+	ShareableAddrs() []ma.Multiaddr
+}
+
+var _ addrSource = (*p2p.Node)(nil)
+
+// leaveState is the direct dialling of one contact we reach only through
+// the relay.
+type leaveState struct {
+	busy  bool          // a dial is running
+	delay time.Duration // the wait after the last failure; 0 before any
+	due   time.Time     // no dial before this, unless new addresses arrive
 }
 
 // peerState is the reconnect loop's bookkeeping for one peer with pending work.
@@ -56,6 +90,8 @@ func (n *Node) run(ctx context.Context, p2pEvents <-chan any, busEvents <-chan a
 	defer tick.Stop()
 	presence := time.NewTicker(n.iv.presence)
 	defer presence.Stop()
+	direct := time.NewTicker(n.iv.direct)
+	defer direct.Stop()
 
 	n.sweepPresence(ctx)
 	for {
@@ -85,13 +121,16 @@ func (n *Node) run(ctx context.Context, p2pEvents <-chan any, busEvents <-chan a
 		case <-presence.C:
 			n.unparkAll()
 			n.sweepPresence(ctx)
+		case <-direct.C:
+			n.leaveRelay(ctx)
 		}
 	}
 }
 
 // onConnectedness handles a connection change to id. For a contact it
 // publishes Connectivity; on connect it also protects the connection, saves
-// the peer's addrs and flushes right away.
+// the peer's addrs, sends an accepted contact our addresses and flushes
+// right away.
 func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 	c, err := n.st.GetContact(ctx, id)
 	if err != nil {
@@ -116,21 +155,106 @@ func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 		n.h.ConnManager().Protect(id, protectTag)
 	}
 	n.saveAddrs(ctx, id)
+	if c.State == store.StateAccepted {
+		n.loops.Go(func(ctx context.Context) {
+			if err := n.addrs.Send(ctx, id); err != nil {
+				n.log.Info("could not send our addresses", "peer", id, "err", err)
+			}
+		})
+	}
 	n.resetPeer(id)
 	n.schedule(id, time.Now())
 }
 
-// saveAddrs stores up to maxSavedAddrs of id's non-loopback peerstore addrs.
-func (n *Node) saveAddrs(ctx context.Context, id peer.ID) {
-	var addrs []ma.Multiaddr
-	for _, a := range n.h.Peerstore().Addrs(id) {
-		if len(addrs) == maxSavedAddrs {
-			break
-		}
-		if !manet.IsIPLoopback(a) {
-			addrs = append(addrs, a)
+// contactAddrsArrived runs when contact id sent its addresses: they are
+// saved and, if we are on the relay, tried at once.
+func (n *Node) contactAddrsArrived(id peer.ID) {
+	n.loops.Go(func(ctx context.Context) { n.saveAddrs(ctx, id) })
+	n.tryDirect(id, true)
+}
+
+// leaveRelay tries a direct connection to every accepted contact we are
+// connected to only through the relay.
+func (n *Node) leaveRelay(ctx context.Context) {
+	cs, err := n.st.ListContacts(ctx)
+	if err != nil {
+		return
+	}
+	for _, c := range cs {
+		if c.State == store.StateAccepted {
+			n.tryDirect(c.PeerID, false)
 		}
 	}
+}
+
+// tryDirect dials id directly in the background if we are connected to it
+// only through the relay, no such dial is running and, unless now is set
+// (new addresses), the wait after the last failure is over. On success the
+// relayed connection is closed and Connectivity published.
+func (n *Node) tryDirect(id peer.ID, now bool) {
+	if n.dialer == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if connected, relayed := n.connInfo(id); !connected || !relayed {
+		delete(n.leaving, id)
+		return
+	}
+	ls, ok := n.leaving[id]
+	if !ok {
+		ls = &leaveState{}
+		n.leaving[id] = ls
+	}
+	if ls.busy || (!now && time.Now().Before(ls.due)) {
+		return
+	}
+	ls.busy = true
+	if !n.loops.Go(func(ctx context.Context) { n.dialDirect(ctx, id, ls) }) {
+		ls.busy = false
+	}
+}
+
+// dialDirect is tryDirect's dial.
+func (n *Node) dialDirect(ctx context.Context, id peer.ID, ls *leaveState) {
+	dctx, cancel := context.WithTimeout(ctx, directTimeout)
+	err := n.dialer.DialDirect(dctx, id)
+	cancel()
+
+	n.mu.Lock()
+	ls.busy = false
+	if err != nil {
+		ls.delay = min(max(2*ls.delay, n.iv.direct), maxDirectFactor*n.iv.direct)
+		ls.due = time.Now().Add(ls.delay)
+		next := ls.delay
+		n.mu.Unlock()
+		n.log.Debug("still on the relay: direct dial failed", "peer", id, "next_in", next, "err", err)
+		return
+	}
+	delete(n.leaving, id)
+	n.mu.Unlock()
+	n.log.Info("moved off the relay: connected directly", "peer", id)
+	n.saveAddrs(ctx, id)
+	connected, relayed := n.connInfo(id)
+	n.bus.Publish(event.Connectivity{Peer: id, Connected: connected, Relayed: relayed})
+}
+
+// saveAddrs stores up to maxSavedAddrs of id's non-loopback peerstore
+// addrs, direct ones first: relay addresses can be rebuilt from the helper,
+// so they must not crowd out the direct ones.
+func (n *Node) saveAddrs(ctx context.Context, id peer.ID) {
+	var direct, relay []ma.Multiaddr
+	for _, a := range n.h.Peerstore().Addrs(id) {
+		switch {
+		case manet.IsIPLoopback(a):
+		case isCircuit(a):
+			relay = append(relay, a)
+		default:
+			direct = append(direct, a)
+		}
+	}
+	addrs := append(direct, relay...)
+	addrs = addrs[:min(len(addrs), maxSavedAddrs)]
 	if len(addrs) > 0 {
 		// Best effort; the next connect retries.
 		if err := n.st.SetAddrs(ctx, id, addrs); err != nil {

@@ -13,8 +13,55 @@ message ChatMessage {
   bytes id = 1;
   int64 sent_at = 2; // unix ms
   string text = 3;
+  bytes reply_to = 4; // the message this one answers, if any
 }
 
 message Ack {
   bytes id = 1;
 }
+
+// Update changes a message already sent, on /twocan/update/1.0.0. The
+// receiver applies it and acks its id (a UUIDv7) with an Ack.
+message Update {
+  bytes id = 1;
+  oneof change {
+    Edit edit = 2;
+    Delete delete = 3;
+    Reaction reaction = 4;
+    Read read = 5;
+  }
+}
+
+// Edit replaces the text of one of the sender's messages.
+message Edit {
+  bytes msg_id = 1;
+  string text = 2;
+  int64 edited_at = 3; // unix ms
+}
+
+// Delete deletes one of the sender's messages for everyone.
+message Delete {
+  bytes msg_id = 1;
+}
+
+// Reaction sets the sender's reaction to a message; "" removes it.
+message Reaction {
+  bytes msg_id = 1;
+  string emoji = 2;
+}
+
+// Read says the sender has read these of the receiver's messages.
+message Read {
+  repeated bytes msg_ids = 1;
+}
+
+message UpdateFrame {
+  oneof body {
+    Update update = 1;
+    Ack ack = 2;
+  }
+}
+
+// Typing says the sender is typing, on /twocan/typing/1.0.0 (one frame per
+// stream, never acked).
+message Typing {}

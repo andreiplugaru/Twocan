@@ -174,7 +174,7 @@ func TestCheckUnreachableWithoutHelper(t *testing.T) {
 	res, _ := checkWithReports(t.Context(), a, ghost)
 	require.Equal(t, StepFail, res.Steps[stepDirect].Status)
 	require.Contains(t, res.Steps[stepDirect].Detail, "refused the connection")
-	require.Contains(t, res.Steps[stepDirect].Detail, "Tried 1 address.")
+	require.Contains(t, res.Steps[stepDirect].Detail, "Tried 1 address:\n/ip4/127.0.0.1/tcp/1: refused (nothing listens there)")
 	require.False(t, res.Connected)
 	require.Contains(t, res.Verdict, "no helper is configured")
 }

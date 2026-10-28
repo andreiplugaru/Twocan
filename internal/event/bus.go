@@ -23,6 +23,17 @@ type MessageDelivered struct {
 	ID   []byte
 }
 
+// MessagesUpdated is published when messages already shown changed: edited,
+// deleted, reacted to, or read by the contact. IDs are the messages'.
+type MessagesUpdated struct {
+	Peer peer.ID
+	IDs  [][]byte
+}
+
+// Typing is published when a contact says they are typing; it holds for a
+// few seconds (chat.TypingFor) unless repeated.
+type Typing struct{ Peer peer.ID }
+
 // ContactChanged is published when a contact is added or its state changes.
 type ContactChanged struct{ Peer peer.ID }
 

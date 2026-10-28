@@ -37,6 +37,24 @@ type fakeAPI struct {
 	AddCalls      []string
 	AddImageCalls []image.Image
 	RenameCalls   []renameCall
+	ReplyCalls    []replyCall
+	EditCalls     []sendCall // To is the conversation, Text the new text
+	DeleteCalls   []deleteCall
+	ReactCalls    []string // "emoji" per call, "" for a removal
+	TypingCalls   []peer.ID
+	SearchCalls   []string
+	searchResult  []store.Message
+}
+
+type replyCall struct {
+	To      peer.ID
+	ReplyTo []byte
+	Text    string
+}
+
+type deleteCall struct {
+	ID          []byte
+	ForEveryone bool
 }
 
 type renameCall struct {
@@ -140,6 +158,65 @@ func (f *fakeAPI) Send(_ context.Context, to peer.ID, text string) (store.Messag
 	m := f.newMsg(to, store.DirOut, text)
 	f.history[to] = append(f.history[to], m)
 	return m, nil
+}
+
+func (f *fakeAPI) Reply(_ context.Context, to peer.ID, replyTo []byte, text string) (store.Message, error) {
+	f.ReplyCalls = append(f.ReplyCalls, replyCall{To: to, ReplyTo: replyTo, Text: text})
+	m := f.newMsg(to, store.DirOut, text)
+	m.ReplyTo = replyTo
+	f.history[to] = append(f.history[to], m)
+	return m, nil
+}
+
+// message returns a pointer to message msgID of conversation id, or nil.
+func (f *fakeAPI) message(id peer.ID, msgID []byte) *store.Message {
+	for i := range f.history[id] {
+		if string(f.history[id][i].ID) == string(msgID) {
+			return &f.history[id][i]
+		}
+	}
+	return nil
+}
+
+func (f *fakeAPI) Edit(_ context.Context, id peer.ID, msgID []byte, text string) error {
+	f.EditCalls = append(f.EditCalls, sendCall{To: id, Text: text})
+	if m := f.message(id, msgID); m != nil {
+		m.Text, m.EditedAt = text, time.Now()
+	}
+	return nil
+}
+
+func (f *fakeAPI) Delete(_ context.Context, id peer.ID, msgID []byte, forEveryone bool) error {
+	f.DeleteCalls = append(f.DeleteCalls, deleteCall{ID: msgID, ForEveryone: forEveryone})
+	if forEveryone {
+		if m := f.message(id, msgID); m != nil {
+			m.Text, m.Deleted = "", true
+		}
+		return nil
+	}
+	var kept []store.Message
+	for _, m := range f.history[id] {
+		if string(m.ID) != string(msgID) {
+			kept = append(kept, m)
+		}
+	}
+	f.history[id] = kept
+	return nil
+}
+
+func (f *fakeAPI) React(_ context.Context, id peer.ID, msgID []byte, emoji string) error {
+	f.ReactCalls = append(f.ReactCalls, emoji)
+	if m := f.message(id, msgID); m != nil {
+		m.MyReaction = emoji
+	}
+	return nil
+}
+
+func (f *fakeAPI) Typing(id peer.ID) { f.TypingCalls = append(f.TypingCalls, id) }
+
+func (f *fakeAPI) Search(_ context.Context, q string) ([]store.Message, error) {
+	f.SearchCalls = append(f.SearchCalls, q)
+	return f.searchResult, nil
 }
 
 func (f *fakeAPI) History(_ context.Context, id peer.ID) ([]store.Message, error) {

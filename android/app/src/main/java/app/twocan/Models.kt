@@ -34,14 +34,28 @@ data class Message(
     val id: String,
     val peer: String,
     val out: Boolean,
+    /** "" once deleted for everyone. */
     val text: String,
     /** Unix milliseconds: when sent (out) or received (in). */
     val at: Long,
-    /** pending or delivered (out), received (in). */
+    /** pending, delivered or read (out), received (in). */
     val status: String,
+    /** The ID of the message this one answers; "" if none. */
+    val replyTo: String = "",
+    /** Unix milliseconds; 0 if never edited. */
+    val editedAt: Long = 0,
+    /** Deleted for everyone: only "This message was deleted" is left. */
+    val deleted: Boolean = false,
+    val myReaction: String = "",
+    val theirReaction: String = "",
 ) {
     val delivered get() = status == "delivered"
+    val read get() = status == "read"
+    val edited get() = editedAt != 0L
 }
+
+/** A run of formatted text, from the Go core's Format. */
+data class Span(val text: String, val bold: Boolean, val italic: Boolean, val url: String)
 
 data class Field(val label: String, val value: String)
 
@@ -49,6 +63,9 @@ data class Field(val label: String, val value: String)
 sealed interface NodeEvent {
     data class MessageArrived(val message: Message) : NodeEvent
     data class Delivered(val peer: String, val id: String) : NodeEvent
+    /** Messages were edited, deleted, reacted to or read. */
+    data class Updated(val peer: String, val ids: List<String>) : NodeEvent
+    data class Typing(val peer: String) : NodeEvent
     data object ContactsChanged : NodeEvent
     data class Reachability(val text: String) : NodeEvent
 }
@@ -79,12 +96,22 @@ object Json {
         return when (o.getString("type")) {
             "message" -> NodeEvent.MessageArrived(message(o.getJSONObject("message")))
             "delivered" -> NodeEvent.Delivered(o.getString("peer"), o.getString("id"))
+            "updated" -> {
+                val ids = o.getJSONArray("ids")
+                NodeEvent.Updated(o.getString("peer"), List(ids.length()) { ids.getString(it) })
+            }
+            "typing" -> NodeEvent.Typing(o.getString("peer"))
             "contacts" -> NodeEvent.ContactsChanged
             "reachability" -> NodeEvent.Reachability(o.getString("text"))
             else -> null
         }
     }
 
+    fun spans(s: String): List<Span> = objects(s).map {
+        Span(it.getString("text"), it.getBoolean("bold"), it.getBoolean("italic"), it.getString("url"))
+    }
+
+    // optX: fields an older Go core does not send.
     private fun message(o: JSONObject) = Message(
         id = o.getString("id"),
         peer = o.getString("peer"),
@@ -92,6 +119,11 @@ object Json {
         text = o.getString("text"),
         at = o.getLong("at"),
         status = o.getString("status"),
+        replyTo = o.optString("replyTo"),
+        editedAt = o.optLong("editedAt"),
+        deleted = o.optBoolean("deleted"),
+        myReaction = o.optString("myReaction"),
+        theirReaction = o.optString("theirReaction"),
     )
 
     private fun objects(s: String): List<JSONObject> {

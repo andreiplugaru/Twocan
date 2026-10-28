@@ -108,6 +108,7 @@ type ChatMessage struct {
 	Id            []byte                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	SentAt        int64                  `protobuf:"varint,2,opt,name=sent_at,json=sentAt,proto3" json:"sent_at,omitempty"` // unix ms
 	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	ReplyTo       []byte                 `protobuf:"bytes,4,opt,name=reply_to,json=replyTo,proto3" json:"reply_to,omitempty"` // the message this one answers, if any
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -163,6 +164,13 @@ func (x *ChatMessage) GetText() string {
 	return ""
 }
 
+func (x *ChatMessage) GetReplyTo() []byte {
+	if x != nil {
+		return x.ReplyTo
+	}
+	return nil
+}
+
 type Ack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            []byte                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -207,6 +215,454 @@ func (x *Ack) GetId() []byte {
 	return nil
 }
 
+// Update changes a message already sent, on /twocan/update/1.0.0. The
+// receiver applies it and acks its id (a UUIDv7) with an Ack.
+type Update struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    []byte                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Types that are valid to be assigned to Change:
+	//
+	//	*Update_Edit
+	//	*Update_Delete
+	//	*Update_Reaction
+	//	*Update_Read
+	Change        isUpdate_Change `protobuf_oneof:"change"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Update) Reset() {
+	*x = Update{}
+	mi := &file_chat_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Update) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Update) ProtoMessage() {}
+
+func (x *Update) ProtoReflect() protoreflect.Message {
+	mi := &file_chat_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Update.ProtoReflect.Descriptor instead.
+func (*Update) Descriptor() ([]byte, []int) {
+	return file_chat_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *Update) GetId() []byte {
+	if x != nil {
+		return x.Id
+	}
+	return nil
+}
+
+func (x *Update) GetChange() isUpdate_Change {
+	if x != nil {
+		return x.Change
+	}
+	return nil
+}
+
+func (x *Update) GetEdit() *Edit {
+	if x != nil {
+		if x, ok := x.Change.(*Update_Edit); ok {
+			return x.Edit
+		}
+	}
+	return nil
+}
+
+func (x *Update) GetDelete() *Delete {
+	if x != nil {
+		if x, ok := x.Change.(*Update_Delete); ok {
+			return x.Delete
+		}
+	}
+	return nil
+}
+
+func (x *Update) GetReaction() *Reaction {
+	if x != nil {
+		if x, ok := x.Change.(*Update_Reaction); ok {
+			return x.Reaction
+		}
+	}
+	return nil
+}
+
+func (x *Update) GetRead() *Read {
+	if x != nil {
+		if x, ok := x.Change.(*Update_Read); ok {
+			return x.Read
+		}
+	}
+	return nil
+}
+
+type isUpdate_Change interface {
+	isUpdate_Change()
+}
+
+type Update_Edit struct {
+	Edit *Edit `protobuf:"bytes,2,opt,name=edit,proto3,oneof"`
+}
+
+type Update_Delete struct {
+	Delete *Delete `protobuf:"bytes,3,opt,name=delete,proto3,oneof"`
+}
+
+type Update_Reaction struct {
+	Reaction *Reaction `protobuf:"bytes,4,opt,name=reaction,proto3,oneof"`
+}
+
+type Update_Read struct {
+	Read *Read `protobuf:"bytes,5,opt,name=read,proto3,oneof"`
+}
+
+func (*Update_Edit) isUpdate_Change() {}
+
+func (*Update_Delete) isUpdate_Change() {}
+
+func (*Update_Reaction) isUpdate_Change() {}
+
+func (*Update_Read) isUpdate_Change() {}
+
+// Edit replaces the text of one of the sender's messages.
+type Edit struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MsgId         []byte                 `protobuf:"bytes,1,opt,name=msg_id,json=msgId,proto3" json:"msg_id,omitempty"`
+	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	EditedAt      int64                  `protobuf:"varint,3,opt,name=edited_at,json=editedAt,proto3" json:"edited_at,omitempty"` // unix ms
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Edit) Reset() {
+	*x = Edit{}
+	mi := &file_chat_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Edit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Edit) ProtoMessage() {}
+
+func (x *Edit) ProtoReflect() protoreflect.Message {
+	mi := &file_chat_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Edit.ProtoReflect.Descriptor instead.
+func (*Edit) Descriptor() ([]byte, []int) {
+	return file_chat_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Edit) GetMsgId() []byte {
+	if x != nil {
+		return x.MsgId
+	}
+	return nil
+}
+
+func (x *Edit) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *Edit) GetEditedAt() int64 {
+	if x != nil {
+		return x.EditedAt
+	}
+	return 0
+}
+
+// Delete deletes one of the sender's messages for everyone.
+type Delete struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MsgId         []byte                 `protobuf:"bytes,1,opt,name=msg_id,json=msgId,proto3" json:"msg_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Delete) Reset() {
+	*x = Delete{}
+	mi := &file_chat_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Delete) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Delete) ProtoMessage() {}
+
+func (x *Delete) ProtoReflect() protoreflect.Message {
+	mi := &file_chat_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Delete.ProtoReflect.Descriptor instead.
+func (*Delete) Descriptor() ([]byte, []int) {
+	return file_chat_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Delete) GetMsgId() []byte {
+	if x != nil {
+		return x.MsgId
+	}
+	return nil
+}
+
+// Reaction sets the sender's reaction to a message; "" removes it.
+type Reaction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MsgId         []byte                 `protobuf:"bytes,1,opt,name=msg_id,json=msgId,proto3" json:"msg_id,omitempty"`
+	Emoji         string                 `protobuf:"bytes,2,opt,name=emoji,proto3" json:"emoji,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Reaction) Reset() {
+	*x = Reaction{}
+	mi := &file_chat_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Reaction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Reaction) ProtoMessage() {}
+
+func (x *Reaction) ProtoReflect() protoreflect.Message {
+	mi := &file_chat_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Reaction.ProtoReflect.Descriptor instead.
+func (*Reaction) Descriptor() ([]byte, []int) {
+	return file_chat_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *Reaction) GetMsgId() []byte {
+	if x != nil {
+		return x.MsgId
+	}
+	return nil
+}
+
+func (x *Reaction) GetEmoji() string {
+	if x != nil {
+		return x.Emoji
+	}
+	return ""
+}
+
+// Read says the sender has read these of the receiver's messages.
+type Read struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MsgIds        [][]byte               `protobuf:"bytes,1,rep,name=msg_ids,json=msgIds,proto3" json:"msg_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Read) Reset() {
+	*x = Read{}
+	mi := &file_chat_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Read) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Read) ProtoMessage() {}
+
+func (x *Read) ProtoReflect() protoreflect.Message {
+	mi := &file_chat_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Read.ProtoReflect.Descriptor instead.
+func (*Read) Descriptor() ([]byte, []int) {
+	return file_chat_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *Read) GetMsgIds() [][]byte {
+	if x != nil {
+		return x.MsgIds
+	}
+	return nil
+}
+
+type UpdateFrame struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Body:
+	//
+	//	*UpdateFrame_Update
+	//	*UpdateFrame_Ack
+	Body          isUpdateFrame_Body `protobuf_oneof:"body"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateFrame) Reset() {
+	*x = UpdateFrame{}
+	mi := &file_chat_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateFrame) ProtoMessage() {}
+
+func (x *UpdateFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_chat_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateFrame.ProtoReflect.Descriptor instead.
+func (*UpdateFrame) Descriptor() ([]byte, []int) {
+	return file_chat_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *UpdateFrame) GetBody() isUpdateFrame_Body {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *UpdateFrame) GetUpdate() *Update {
+	if x != nil {
+		if x, ok := x.Body.(*UpdateFrame_Update); ok {
+			return x.Update
+		}
+	}
+	return nil
+}
+
+func (x *UpdateFrame) GetAck() *Ack {
+	if x != nil {
+		if x, ok := x.Body.(*UpdateFrame_Ack); ok {
+			return x.Ack
+		}
+	}
+	return nil
+}
+
+type isUpdateFrame_Body interface {
+	isUpdateFrame_Body()
+}
+
+type UpdateFrame_Update struct {
+	Update *Update `protobuf:"bytes,1,opt,name=update,proto3,oneof"`
+}
+
+type UpdateFrame_Ack struct {
+	Ack *Ack `protobuf:"bytes,2,opt,name=ack,proto3,oneof"`
+}
+
+func (*UpdateFrame_Update) isUpdateFrame_Body() {}
+
+func (*UpdateFrame_Ack) isUpdateFrame_Body() {}
+
+// Typing says the sender is typing, on /twocan/typing/1.0.0 (one frame per
+// stream, never acked).
+type Typing struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Typing) Reset() {
+	*x = Typing{}
+	mi := &file_chat_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Typing) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Typing) ProtoMessage() {}
+
+func (x *Typing) ProtoReflect() protoreflect.Message {
+	mi := &file_chat_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Typing.ProtoReflect.Descriptor instead.
+func (*Typing) Descriptor() ([]byte, []int) {
+	return file_chat_proto_rawDescGZIP(), []int{9}
+}
+
 var File_chat_proto protoreflect.FileDescriptor
 
 const file_chat_proto_rawDesc = "" +
@@ -216,13 +672,37 @@ const file_chat_proto_rawDesc = "" +
 	"\tChatFrame\x12/\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.twocan.ChatMessageH\x00R\amessage\x12\x1f\n" +
 	"\x03ack\x18\x02 \x01(\v2\v.twocan.AckH\x00R\x03ackB\x06\n" +
-	"\x04body\"J\n" +
+	"\x04body\"e\n" +
 	"\vChatMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\fR\x02id\x12\x17\n" +
 	"\asent_at\x18\x02 \x01(\x03R\x06sentAt\x12\x12\n" +
-	"\x04text\x18\x03 \x01(\tR\x04text\"\x15\n" +
+	"\x04text\x18\x03 \x01(\tR\x04text\x12\x19\n" +
+	"\breply_to\x18\x04 \x01(\fR\areplyTo\"\x15\n" +
 	"\x03Ack\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\fR\x02idB\x1aZ\x18twocan/internal/proto;pbb\x06proto3"
+	"\x02id\x18\x01 \x01(\fR\x02id\"\xc4\x01\n" +
+	"\x06Update\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\fR\x02id\x12\"\n" +
+	"\x04edit\x18\x02 \x01(\v2\f.twocan.EditH\x00R\x04edit\x12(\n" +
+	"\x06delete\x18\x03 \x01(\v2\x0e.twocan.DeleteH\x00R\x06delete\x12.\n" +
+	"\breaction\x18\x04 \x01(\v2\x10.twocan.ReactionH\x00R\breaction\x12\"\n" +
+	"\x04read\x18\x05 \x01(\v2\f.twocan.ReadH\x00R\x04readB\b\n" +
+	"\x06change\"N\n" +
+	"\x04Edit\x12\x15\n" +
+	"\x06msg_id\x18\x01 \x01(\fR\x05msgId\x12\x12\n" +
+	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1b\n" +
+	"\tedited_at\x18\x03 \x01(\x03R\beditedAt\"\x1f\n" +
+	"\x06Delete\x12\x15\n" +
+	"\x06msg_id\x18\x01 \x01(\fR\x05msgId\"7\n" +
+	"\bReaction\x12\x15\n" +
+	"\x06msg_id\x18\x01 \x01(\fR\x05msgId\x12\x14\n" +
+	"\x05emoji\x18\x02 \x01(\tR\x05emoji\"\x1f\n" +
+	"\x04Read\x12\x17\n" +
+	"\amsg_ids\x18\x01 \x03(\fR\x06msgIds\"`\n" +
+	"\vUpdateFrame\x12(\n" +
+	"\x06update\x18\x01 \x01(\v2\x0e.twocan.UpdateH\x00R\x06update\x12\x1f\n" +
+	"\x03ack\x18\x02 \x01(\v2\v.twocan.AckH\x00R\x03ackB\x06\n" +
+	"\x04body\"\b\n" +
+	"\x06TypingB\x1aZ\x18twocan/internal/proto;pbb\x06proto3"
 
 var (
 	file_chat_proto_rawDescOnce sync.Once
@@ -236,20 +716,33 @@ func file_chat_proto_rawDescGZIP() []byte {
 	return file_chat_proto_rawDescData
 }
 
-var file_chat_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_chat_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_chat_proto_goTypes = []any{
 	(*ChatFrame)(nil),   // 0: twocan.ChatFrame
 	(*ChatMessage)(nil), // 1: twocan.ChatMessage
 	(*Ack)(nil),         // 2: twocan.Ack
+	(*Update)(nil),      // 3: twocan.Update
+	(*Edit)(nil),        // 4: twocan.Edit
+	(*Delete)(nil),      // 5: twocan.Delete
+	(*Reaction)(nil),    // 6: twocan.Reaction
+	(*Read)(nil),        // 7: twocan.Read
+	(*UpdateFrame)(nil), // 8: twocan.UpdateFrame
+	(*Typing)(nil),      // 9: twocan.Typing
 }
 var file_chat_proto_depIdxs = []int32{
 	1, // 0: twocan.ChatFrame.message:type_name -> twocan.ChatMessage
 	2, // 1: twocan.ChatFrame.ack:type_name -> twocan.Ack
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	4, // 2: twocan.Update.edit:type_name -> twocan.Edit
+	5, // 3: twocan.Update.delete:type_name -> twocan.Delete
+	6, // 4: twocan.Update.reaction:type_name -> twocan.Reaction
+	7, // 5: twocan.Update.read:type_name -> twocan.Read
+	3, // 6: twocan.UpdateFrame.update:type_name -> twocan.Update
+	2, // 7: twocan.UpdateFrame.ack:type_name -> twocan.Ack
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_chat_proto_init() }
@@ -261,13 +754,23 @@ func file_chat_proto_init() {
 		(*ChatFrame_Message)(nil),
 		(*ChatFrame_Ack)(nil),
 	}
+	file_chat_proto_msgTypes[3].OneofWrappers = []any{
+		(*Update_Edit)(nil),
+		(*Update_Delete)(nil),
+		(*Update_Reaction)(nil),
+		(*Update_Read)(nil),
+	}
+	file_chat_proto_msgTypes[8].OneofWrappers = []any{
+		(*UpdateFrame_Update)(nil),
+		(*UpdateFrame_Ack)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_chat_proto_rawDesc), len(file_chat_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

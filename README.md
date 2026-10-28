@@ -58,9 +58,18 @@ On the same Wi-Fi or LAN, peers find each other automatically, so no helper is n
 2. One of you clicks **My card** and sends the card to the other: copy the text, or save the QR code as a PNG.
 3. The other clicks **Add contact** and pastes the text, opens the QR image, or pastes a QR screenshot from the clipboard.
 4. The first person sees **wants to add you** and clicks **Accept**.
-5. Chat. 🕓 means the message is waiting; ✓ means it was delivered.
+5. Chat. 🕓 means the message is waiting, ✓ that it was delivered, ✓✓ that they read it.
 
 Messages you send while your contact is offline wait on your computer and go out automatically when you're both online.
+
+## In a conversation
+
+- **Formatting:** `*bold*`, `_italic_`, and web addresses become links.
+- **Click a message** (long-press on Android) to reply to it, react with an emoji, copy it, edit it or delete it. You can edit or delete for everyone only your own messages. "Delete for everyone" leaves "This message was deleted" on both sides, and a message not yet sent is never sent. "Delete for me" removes it from this device only.
+- **Read receipts and typing:** ✓✓ shows once they have read a message, and "typing…" while they write to you.
+- **Search** (the box above the contacts, or 🔍 on Android) finds messages in every conversation, ignoring accents and case.
+
+Edits, deletions, reactions and read receipts wait on your device like messages and reach your contact when you are both online. A contact on an older Twocan still gets your messages, just not those changes. Nothing is ever deleted from their device without their Twocan agreeing to it, so treat "delete for everyone" as a request.
 
 ## Chatting across the internet
 
@@ -90,7 +99,9 @@ Select the contact and click **Details** above the conversation (or run `/info <
 6. a dial through the helper's relay;
 7. a hole punch.
 
-It ends with a one-line verdict. **Copy results** puts the whole report on the clipboard, ready to paste into a bug report. Successful dials stay connected. "Last seen" and "last problem" cover the current session only.
+It ends with a one-line verdict. The direct dial lists every address it tried and why each failed. **Copy results** puts the whole report on the clipboard, ready to paste into a bug report. Successful dials stay connected. "Last seen" and "last problem" cover the current session only.
+
+**Why you might be on the relay, and how Twocan gets off it.** Twocan keeps the same ports from one start to the next, so the addresses your contacts saved keep working. When two contacts connect, even through the relay, each sends the other all its addresses: the local network ones that libp2p and the helper never pass on, and the public ones (IPv6, a port your router forwards, the address the helper sees) that libp2p stops advertising once you have a relay address. While a contact is connected only through the relay, Twocan tries those addresses right away, then after 1 minute, 2, 4 and so on up to every 30 minutes, and switches to a direct connection as soon as one works. On mobile data a direct connection needs one side to accept incoming connections (often IPv6, or a forwarded port) or a successful hole punch; otherwise the relay is the expected path. If you stay on the relay, the direct dial in **Check connection** shows which addresses fail and why: "no answer" usually means a firewall, or a Wi-Fi network that keeps devices apart.
 
 ## Command-line client
 
@@ -108,7 +119,12 @@ bin/twocan-cli --data-dir /tmp/ben --name Ben  # a second identity on the same m
 | `/rename <who> <nickname>` | Set a local nickname |
 | `/contacts` | List contacts with online/offline and direct/relayed |
 | `/msg <who> <text>` | Send a message |
-| `/history <who>` | Show the conversation |
+| `/history <who>` | Show the conversation, each message with its short `<id>` |
+| `/reply <who> <id> <text>` | Answer a message |
+| `/edit <who> <id> <text>` | Change one of your messages |
+| `/delete <who> <id> [all]` | Delete a message for you, or with `all` for everyone (your own only) |
+| `/react <who> <id> <emoji>` | React to a message; `-` removes your reaction |
+| `/search <words>` | Find messages in every conversation |
 | `/stats <who>` | Message counts (in, out, pending) |
 | `/info <who>` | Connection details: how you're connected and found each other, last problem, saved addresses |
 | `/check <who>` | Check step by step whether and how they can be reached |
@@ -119,7 +135,7 @@ bin/twocan-cli --data-dir /tmp/ben --name Ben  # a second identity on the same m
 
 ## Android app
 
-The Android app (Android 8 and up) does everything the desktop app does: your card as a QR code to scan or text to share, adding contacts by scanning their QR code with the camera or pasting their card, requests, nicknames (long-press a contact), chat with 🕓/✓, connection details and Check connection (the ⓘ in a conversation). The phone is its own identity, with its own card and history, just like another computer.
+The Android app (Android 8 and up) does everything the desktop app does: your card as a QR code to scan or text to share, adding contacts by scanning their QR code with the camera or pasting their card, requests, nicknames (long-press a contact), chat with replies, reactions, edits, deletions, read receipts, typing indicators and formatting (long-press a message), search, connection details and Check connection (the ⓘ in a conversation). The phone is its own identity, with its own card and history, just like another computer.
 
 **It is online only while it is open**, and for a minute after you leave it. Messages sent to you meanwhile wait on the sender's device and arrive when you are both online. Wake-up notifications are planned for the next version.
 

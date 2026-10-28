@@ -31,6 +31,7 @@ import app.twocan.ui.CardScreen
 import app.twocan.ui.ChatScreen
 import app.twocan.ui.ContactsScreen
 import app.twocan.ui.DetailsScreen
+import app.twocan.ui.SearchScreen
 import app.twocan.ui.SettingsScreen
 import app.twocan.ui.SetupScreen
 import app.twocan.ui.TwocanTheme
@@ -86,14 +87,23 @@ private fun Screens(twocan: Twocan) {
             ContactsScreen(
                 twocan,
                 onOpen = { nav.navigate("chat/$it") },
+                onSearch = { nav.navigate("search") },
                 onMyCard = { nav.navigate("card") },
                 onAdd = { nav.navigate("add") },
                 onSettings = { nav.navigate("settings") },
             )
         }
-        composable("chat/{id}") {
+        composable("chat/{id}?msg={msg}") {
             val id = it.arguments?.getString("id").orEmpty()
-            ChatScreen(twocan, id, onBack = nav::popBackStack, onDetails = { nav.navigate("details/$id") })
+            val msg = it.arguments?.getString("msg")
+            ChatScreen(twocan, id, msg, onBack = nav::popBackStack, onDetails = { nav.navigate("details/$id") })
+        }
+        composable("search") {
+            SearchScreen(
+                twocan,
+                onOpen = { peer, msg -> nav.navigate("chat/$peer?msg=$msg") },
+                onBack = nav::popBackStack,
+            )
         }
         composable("details/{id}") {
             DetailsScreen(twocan, it.arguments?.getString("id").orEmpty(), onBack = nav::popBackStack)

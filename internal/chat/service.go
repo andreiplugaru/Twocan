@@ -1,6 +1,8 @@
-// Package chat implements Twocan's message protocol: an outbox of pending
+// Package chat implements Twocan's message protocols: an outbox of pending
 // messages per peer, delivered in order over one stream and acknowledged one
-// by one, with receiver-side deduplication.
+// by one, with receiver-side deduplication; and, in updates.go, changes to
+// messages already sent (edits, deletions, reactions, read receipts) and
+// typing indicators.
 //
 // The sender writes a ChatMessage and waits for the matching Ack before
 // marking the message delivered and sending the next. The receiver acks only
@@ -20,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -27,6 +30,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 
 	"twocan/internal/event"
 	"twocan/internal/logging"
@@ -64,6 +68,12 @@ var (
 	errBadAck = errors.New("chat: peer did not acknowledge the message")
 	// errBadFrame is an inbound frame that is not a valid ChatMessage.
 	errBadFrame = errors.New("chat: invalid frame")
+	// ErrNoSuchMessage is returned for a message that is not in the conversation.
+	ErrNoSuchMessage = errors.New("chat: no such message")
+	// ErrNotYours is returned for editing or deleting for everyone a message the contact sent.
+	ErrNotYours = errors.New("chat: only your own messages can be changed")
+	// ErrBadReaction is returned for a reaction that is not a short emoji.
+	ErrBadReaction = errors.New("chat: a reaction must be a single emoji")
 )
 
 // Service runs the chat protocol for one host.
@@ -83,6 +93,9 @@ type Service struct {
 	tasks      *svc.Tracker // async flushes and inbound handlers
 	flushLocks svc.Locks[peer.ID]
 
+	typingMu   sync.Mutex
+	lastTyping map[peer.ID]time.Time // when we last told each peer we are typing
+
 	log *slog.Logger // never given message text
 }
 
@@ -95,6 +108,7 @@ func New(h host.Host, st *store.Store, r p2p.Reacher, bus *event.Bus) *Service {
 		bus:         bus,
 		readTimeout: frameTimeout,
 		tasks:       svc.NewTracker(),
+		lastTyping:  make(map[peer.ID]time.Time),
 		log:         logging.Discard(),
 	}
 }
@@ -112,15 +126,19 @@ func msgID(id []byte) string {
 	return u.String()
 }
 
-// Start registers the inbound stream handler.
+// Start registers the inbound stream handlers.
 func (s *Service) Start() {
 	s.h.SetStreamHandler(ProtocolID, s.handleStream)
+	s.h.SetStreamHandler(UpdateProtocolID, s.handleUpdates)
+	s.h.SetStreamHandler(TypingProtocolID, s.handleTyping)
 }
 
 // Close removes the stream handler, cancels background flushes and waits for
 // them and any in-flight inbound handlers to finish.
 func (s *Service) Close() {
 	s.h.RemoveStreamHandler(ProtocolID)
+	s.h.RemoveStreamHandler(UpdateProtocolID)
+	s.h.RemoveStreamHandler(TypingProtocolID)
 	s.tasks.Close()
 }
 
@@ -159,14 +177,23 @@ func (s *Service) requireAccepted(ctx context.Context, id peer.ID) error {
 }
 
 // Send stores text as a pending message to an accepted contact, starts a
-// background flush and returns the stored message. Delivery is reported later
-// with a MessageDelivered event.
-func (s *Service) Send(ctx context.Context, to peer.ID, text string) (store.Message, error) {
+// background flush and returns the stored message. replyTo, if not nil, is
+// the message in this conversation it answers (ErrNoSuchMessage if there is
+// none). Delivery is reported later with a MessageDelivered event.
+func (s *Service) Send(ctx context.Context, to peer.ID, text string, replyTo []byte) (store.Message, error) {
 	if err := checkText(text); err != nil {
 		return store.Message{}, err
 	}
 	if err := s.requireAccepted(ctx, to); err != nil {
 		return store.Message{}, err
+	}
+	if replyTo != nil {
+		if _, err := s.st.GetMessage(ctx, to, replyTo); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return store.Message{}, ErrNoSuchMessage
+			}
+			return store.Message{}, err
+		}
 	}
 	id := uuid.Must(uuid.NewV7())
 	m := store.Message{
@@ -176,8 +203,9 @@ func (s *Service) Send(ctx context.Context, to peer.ID, text string) (store.Mess
 		Text:      text,
 		// The ID's own millisecond timestamp: UUIDv7s are monotonic within
 		// the process, so the outbox order (sent_at, id) is the send order.
-		SentAt: time.UnixMilli(v7Millis(id)),
-		Status: store.StatusPending,
+		SentAt:  time.UnixMilli(v7Millis(id)),
+		Status:  store.StatusPending,
+		ReplyTo: replyTo,
 	}
 	if err := s.st.InsertOutgoing(ctx, m); err != nil {
 		s.log.Warn("could not queue message", "peer", to, "err", err)
@@ -195,13 +223,21 @@ func v7Millis(id uuid.UUID) int64 {
 	return int64(binary.BigEndian.Uint64(b[:]))
 }
 
-// Flush delivers id's pending messages, oldest first, over one stream. Each
-// message is marked delivered (and MessageDelivered published) as soon as its
-// Ack arrives. It stops at the first error and returns it; what was not acked
-// stays pending. Concurrent flushes to the same peer run one at a time.
+// Flush delivers id's pending messages and then its pending updates (see
+// flushUpdates). Concurrent flushes to the same peer run one at a time.
 func (s *Service) Flush(ctx context.Context, id peer.ID) error {
 	defer s.flushLocks.Lock(id)()
+	if err := s.flushMessages(ctx, id); err != nil {
+		return err
+	}
+	return s.flushUpdates(ctx, id)
+}
 
+// flushMessages delivers id's pending messages, oldest first, over one
+// stream. Each message is marked delivered (and MessageDelivered published)
+// as soon as its Ack arrives. It stops at the first error and returns it;
+// what was not acked stays pending. The caller holds id's flush lock.
+func (s *Service) flushMessages(ctx context.Context, id peer.ID) error {
 	pending, err := s.st.PendingOutgoing(ctx, id)
 	if err != nil || len(pending) == 0 {
 		return err
@@ -247,12 +283,17 @@ func (s *Service) Flush(ctx context.Context, id peer.ID) error {
 
 // open reaches id and opens a chat stream to it.
 func (s *Service) open(ctx context.Context, id peer.ID) (network.Stream, error) {
+	return s.openProto(ctx, id, ProtocolID)
+}
+
+// openProto reaches id and opens a stream of protocol proto to it.
+func (s *Service) openProto(ctx context.Context, id peer.ID, proto protocol.ID) (network.Stream, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.readTimeout)
 	defer cancel()
 	if err := s.r.Reach(ctx, id); err != nil {
 		return nil, err
 	}
-	return s.h.NewStream(network.WithAllowLimitedConn(ctx, "twocan"), id, ProtocolID)
+	return s.h.NewStream(network.WithAllowLimitedConn(ctx, "twocan"), id, proto)
 }
 
 // deliver writes m on str and waits for its Ack, within readTimeout.
@@ -261,7 +302,7 @@ func (s *Service) deliver(ctx context.Context, str network.Stream, r *bufio.Read
 	defer cancel()
 
 	f := &pb.ChatFrame{Body: &pb.ChatFrame_Message{Message: &pb.ChatMessage{
-		Id: m.ID, SentAt: m.SentAt.UnixMilli(), Text: m.Text,
+		Id: m.ID, SentAt: m.SentAt.UnixMilli(), Text: m.Text, ReplyTo: m.ReplyTo,
 	}}}
 	if err := wire.WriteFrame(str, f); err != nil {
 		return err
@@ -339,6 +380,10 @@ func (s *Service) receive(ctx context.Context, str network.Stream, r *bufio.Read
 		SentAt:     time.UnixMilli(cm.GetSentAt()),
 		ReceivedAt: time.UnixMilli(time.Now().UnixMilli()),
 		Status:     store.StatusReceived,
+	}
+	// A reply to something malformed is kept as a plain message.
+	if r := cm.GetReplyTo(); len(r) == idLen {
+		m.ReplyTo = r
 	}
 	inserted, err := s.st.InsertIncoming(ctx, m)
 	if err != nil {
