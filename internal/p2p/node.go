@@ -79,9 +79,10 @@ type Node struct {
 	reach atomic.Int32 // network.Reachability
 	log   *slog.Logger
 
-	boot      []peer.AddrInfo // the helpers
-	origins   *origins
-	punchWait time.Duration // Check's wait for a hole punch (0: default; tests shorten it)
+	boot         []peer.AddrInfo                     // the helpers
+	addrsFactory func([]ma.Multiaddr) []ma.Multiaddr // adds Config.InterfaceIPs; nil if unset
+	origins      *origins
+	punchWait    time.Duration // Check's wait for a hole punch (0: default; tests shorten it)
 
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -131,7 +132,8 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 		opts = append(opts, libp2p.ForceReachabilityPrivate())
 	}
 	if cfg.InterfaceIPs != nil {
-		opts = append(opts, libp2p.AddrsFactory(withInterfaceIPs(cfg.InterfaceIPs, n.log)))
+		n.addrsFactory = withInterfaceIPs(cfg.InterfaceIPs, n.log)
+		opts = append(opts, libp2p.AddrsFactory(n.addrsFactory))
 	}
 
 	h, err := libp2p.New(opts...)

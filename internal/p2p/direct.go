@@ -8,9 +8,35 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/host/observedaddrs"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	ma "github.com/multiformats/go-multiaddr"
 )
+
+func init() {
+	// libp2p counts an address others see us at (behind a NAT, our public
+	// one) only once 4 peers have reported it. A Twocan network has a
+	// single helper, the only peer that reports it to us, so it never
+	// counted. One report is enough here.
+	observedaddrs.ActivationThresh = 1
+}
+
+// ShareableAddrs returns every address a contact might reach us at, public
+// ones included. Host().Addrs() leaves public addresses out while we are
+// behind a NAT and have a relay address (it offers the relay instead), but
+// a contact may still get through to them: an IPv6 address, a port the
+// router forwards, or one a hole punch opens.
+func (n *Node) ShareableAddrs() []ma.Multiaddr {
+	all := n.host.Addrs()
+	if h, ok := n.host.(interface{ AllAddrs() []ma.Multiaddr }); ok {
+		direct := h.AllAddrs()
+		if n.addrsFactory != nil {
+			direct = n.addrsFactory(direct)
+		}
+		all = append(all, direct...)
+	}
+	return ma.Unique(all)
+}
 
 // errNoDirectAddrs is returned by DialDirect when no direct address is known.
 var errNoDirectAddrs = errors.New("no addresses: no direct address is known")

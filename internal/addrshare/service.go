@@ -69,6 +69,10 @@ func New(h host.Host, st *store.Store, onAddrs func(peer.ID)) *Service {
 	return &Service{h: h, st: st, onAddrs: onAddrs, own: h.Addrs, tasks: svc.NewTracker(), log: logging.Discard()}
 }
 
+// SetOwnAddrs sets where the addresses we send come from (default: the
+// host's advertised addresses); call it before Start.
+func (s *Service) SetOwnAddrs(own func() []ma.Multiaddr) { s.own = own }
+
 // SetLogger sets where the service logs; call it before Start.
 func (s *Service) SetLogger(l *slog.Logger) { s.log = l.With("component", "addrshare") }
 

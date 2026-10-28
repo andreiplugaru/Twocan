@@ -24,9 +24,14 @@ const (
 	// Retry backoff per peer: starts at backoffMin, doubles, caps at backoffMax.
 	backoffMin = 5 * time.Second
 	backoffMax = 5 * time.Minute
-	// defaultDirect is how often a contact connected only through the
-	// relay is dialled directly, to move off the relay.
-	defaultDirect = time.Minute
+	// defaultDirect is how often contacts connected only through the relay
+	// are looked at, and how long after a failed direct dial the next one
+	// is due. The wait doubles after each failure, up to maxDirectFactor
+	// times this: on mobile data most direct dials fail, and each costs
+	// battery and counts towards libp2p's "black hole" giving up on UDP
+	// and IPv6.
+	defaultDirect   = time.Minute
+	maxDirectFactor = 30
 	// directTimeout bounds one such dial.
 	directTimeout = 30 * time.Second
 	// maxSavedAddrs caps the addrs stored for a contact on connect.
@@ -45,6 +50,21 @@ type directDialer interface {
 }
 
 var _ directDialer = (*p2p.Node)(nil)
+
+// addrSource gives the addresses we send contacts; *p2p.Node implements it.
+type addrSource interface {
+	ShareableAddrs() []ma.Multiaddr
+}
+
+var _ addrSource = (*p2p.Node)(nil)
+
+// leaveState is the direct dialling of one contact we reach only through
+// the relay.
+type leaveState struct {
+	busy  bool          // a dial is running
+	delay time.Duration // the wait after the last failure; 0 before any
+	due   time.Time     // no dial before this, unless new addresses arrive
+}
 
 // peerState is the reconnect loop's bookkeeping for one peer with pending work.
 type peerState struct {
@@ -150,7 +170,7 @@ func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 // saved and, if we are on the relay, tried at once.
 func (n *Node) contactAddrsArrived(id peer.ID) {
 	n.loops.Go(func(ctx context.Context) { n.saveAddrs(ctx, id) })
-	n.tryDirect(id)
+	n.tryDirect(id, true)
 }
 
 // leaveRelay tries a direct connection to every accepted contact we are
@@ -162,50 +182,61 @@ func (n *Node) leaveRelay(ctx context.Context) {
 	}
 	for _, c := range cs {
 		if c.State == store.StateAccepted {
-			n.tryDirect(c.PeerID)
+			n.tryDirect(c.PeerID, false)
 		}
 	}
 }
 
 // tryDirect dials id directly in the background if we are connected to it
-// only through the relay and no such dial is running. On success the
+// only through the relay, no such dial is running and, unless now is set
+// (new addresses), the wait after the last failure is over. On success the
 // relayed connection is closed and Connectivity published.
-func (n *Node) tryDirect(id peer.ID) {
+func (n *Node) tryDirect(id peer.ID, now bool) {
 	if n.dialer == nil {
 		return
 	}
-	if connected, relayed := n.connInfo(id); !connected || !relayed {
-		return
-	}
 	n.mu.Lock()
-	if n.upgrading[id] {
-		n.mu.Unlock()
+	defer n.mu.Unlock()
+	if connected, relayed := n.connInfo(id); !connected || !relayed {
+		delete(n.leaving, id)
 		return
 	}
-	n.upgrading[id] = true
-	n.mu.Unlock()
-	started := n.loops.Go(func(ctx context.Context) {
-		defer func() {
-			n.mu.Lock()
-			delete(n.upgrading, id)
-			n.mu.Unlock()
-		}()
-		dctx, cancel := context.WithTimeout(ctx, directTimeout)
-		defer cancel()
-		if err := n.dialer.DialDirect(dctx, id); err != nil {
-			n.log.Debug("still on the relay: direct dial failed", "peer", id, "err", err)
-			return
-		}
-		n.log.Info("moved off the relay: connected directly", "peer", id)
-		n.saveAddrs(ctx, id)
-		connected, relayed := n.connInfo(id)
-		n.bus.Publish(event.Connectivity{Peer: id, Connected: connected, Relayed: relayed})
-	})
-	if !started {
-		n.mu.Lock()
-		delete(n.upgrading, id)
-		n.mu.Unlock()
+	ls, ok := n.leaving[id]
+	if !ok {
+		ls = &leaveState{}
+		n.leaving[id] = ls
 	}
+	if ls.busy || (!now && time.Now().Before(ls.due)) {
+		return
+	}
+	ls.busy = true
+	if !n.loops.Go(func(ctx context.Context) { n.dialDirect(ctx, id, ls) }) {
+		ls.busy = false
+	}
+}
+
+// dialDirect is tryDirect's dial.
+func (n *Node) dialDirect(ctx context.Context, id peer.ID, ls *leaveState) {
+	dctx, cancel := context.WithTimeout(ctx, directTimeout)
+	err := n.dialer.DialDirect(dctx, id)
+	cancel()
+
+	n.mu.Lock()
+	ls.busy = false
+	if err != nil {
+		ls.delay = min(max(2*ls.delay, n.iv.direct), maxDirectFactor*n.iv.direct)
+		ls.due = time.Now().Add(ls.delay)
+		next := ls.delay
+		n.mu.Unlock()
+		n.log.Debug("still on the relay: direct dial failed", "peer", id, "next_in", next, "err", err)
+		return
+	}
+	delete(n.leaving, id)
+	n.mu.Unlock()
+	n.log.Info("moved off the relay: connected directly", "peer", id)
+	n.saveAddrs(ctx, id)
+	connected, relayed := n.connInfo(id)
+	n.bus.Publish(event.Connectivity{Peer: id, Connected: connected, Relayed: relayed})
 }
 
 // saveAddrs stores up to maxSavedAddrs of id's non-loopback peerstore

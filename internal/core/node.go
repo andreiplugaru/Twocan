@@ -133,11 +133,11 @@ type Node struct {
 	loops *svc.Tracker
 	reach atomic.Int32 // network.Reachability
 
-	mu        sync.Mutex // guards peers, health, nextSweep and upgrading
+	mu        sync.Mutex // guards peers, health, nextSweep and leaving
 	peers     map[peer.ID]*peerState
 	health    map[peer.ID]*health
-	nextSweep time.Time        // when the presence sweep runs next
-	upgrading map[peer.ID]bool // a direct dial to replace the relay is running
+	nextSweep time.Time               // when the presence sweep runs next
+	leaving   map[peer.ID]*leaveState // contacts we try to move off the relay
 
 	stopOnce sync.Once
 	stopErr  error
@@ -261,17 +261,17 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	}
 
 	n := &Node{
-		h:         h,
-		st:        st,
-		r:         r,
-		connInfo:  connInfo,
-		log:       nodeLog,
-		bus:       event.NewBus(),
-		iv:        iv,
-		loops:     svc.NewTracker(),
-		peers:     make(map[peer.ID]*peerState),
-		health:    make(map[peer.ID]*health),
-		upgrading: make(map[peer.ID]bool),
+		h:        h,
+		st:       st,
+		r:        r,
+		connInfo: connInfo,
+		log:      nodeLog,
+		bus:      event.NewBus(),
+		iv:       iv,
+		loops:    svc.NewTracker(),
+		peers:    make(map[peer.ID]*peerState),
+		health:   make(map[peer.ID]*health),
+		leaving:  make(map[peer.ID]*leaveState),
 	}
 	n.diag, _ = r.(diagnoser)
 	n.dialer, _ = r.(directDialer)
@@ -279,6 +279,9 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	n.contacts = contacts.New(h, st, r, n.bus, n.DisplayName)
 	n.chat = chat.New(h, st, r, n.bus)
 	n.addrs = addrshare.New(h, st, n.contactAddrsArrived)
+	if src, ok := r.(addrSource); ok {
+		n.addrs.SetOwnAddrs(src.ShareableAddrs)
+	}
 	n.contacts.SetLogger(log)
 	n.chat.SetLogger(log)
 	n.addrs.SetLogger(log)
