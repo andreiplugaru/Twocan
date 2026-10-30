@@ -187,9 +187,14 @@ func TestUpdateStreamRejectsStrangers(t *testing.T) {
 	us, err := stranger.h.NewStream(t.Context(), b.id(), UpdateProtocolID)
 	require.NoError(t, err)
 	defer us.Reset()
-	require.NoError(t, wire.WriteFrame(us, &pb.UpdateFrame{Body: &pb.UpdateFrame_Update{Update: &pb.Update{
+	// B resets the stream before reading anything, so the reset may beat
+	// the write as well as the read.
+	err = wire.WriteFrame(us, &pb.UpdateFrame{Body: &pb.UpdateFrame_Update{Update: &pb.Update{
 		Id: testID(1), Change: &pb.Update_Delete{Delete: &pb.Delete{MsgId: testID(2)}},
-	}}}))
-	var reply pb.UpdateFrame
-	require.ErrorIs(t, wire.ReadFrame(bufio.NewReader(us), &reply), network.ErrReset)
+	}}})
+	if err == nil {
+		var reply pb.UpdateFrame
+		err = wire.ReadFrame(bufio.NewReader(us), &reply)
+	}
+	require.ErrorIs(t, err, network.ErrReset)
 }
