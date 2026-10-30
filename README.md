@@ -227,12 +227,14 @@ keytool -genkeypair -keystore twocan-release.p12 -storetype PKCS12 -alias twocan
   -keyalg RSA -keysize 4096 -validity 36500 -dname "CN=Twocan" -storepass:file password.txt
 ```
 
-Add it as two repository secrets:
+Add it as two repository secrets, with the [GitHub CLI](https://cli.github.com):
 
 ```bash
 base64 -w0 twocan-release.p12 | gh secret set ANDROID_KEYSTORE_BASE64
 gh secret set ANDROID_KEYSTORE_PASSWORD < password.txt
 ```
+
+Or on GitHub, under *Settings → Secrets and variables → Actions → Secrets*: run `base64 -w0 twocan-release.p12 > keystore.base64`, open `keystore.base64` in an editor, select all and paste it as `ANDROID_KEYSTORE_BASE64`; paste the contents of `password.txt` as `ANDROID_KEYSTORE_PASSWORD`. Copy from the editor rather than the terminal, which can cut a long line short. The release log prints the size and SHA-256 of the keystore it decoded: they must match `wc -c twocan-release.p12` and `sha256sum twocan-release.p12`.
 
 To build a signed release APK locally, set `TWOCAN_KEYSTORE` to the key file, `TWOCAN_KEYSTORE_PASSWORD` to its password and `TWOCAN_VERSION` to the version (`1.2.3`), then run `./gradlew assembleRelease` in `android/`.
 

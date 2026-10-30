@@ -43,7 +43,16 @@ jobs:
             exit 1
           fi
           export TWOCAN_KEYSTORE="$RUNNER_TEMP/release.p12"
-          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$TWOCAN_KEYSTORE"
+          # Line breaks in a pasted secret are ignored.
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$TWOCAN_KEYSTORE"
+          # The hash is of the encrypted file: compare it with
+          # sha256sum twocan-release.p12 to tell a damaged secret.
+          echo "Keystore: $(wc -c < "$TWOCAN_KEYSTORE") bytes, SHA-256 $(sha256sum "$TWOCAN_KEYSTORE" | cut -d' ' -f1)"
+          if ! keytool -list -keystore "$TWOCAN_KEYSTORE" -storetype PKCS12 \
+              -storepass:env TWOCAN_KEYSTORE_PASSWORD -alias twocan > /dev/null; then
+            echo "::error::The keystore in ANDROID_KEYSTORE_BASE64 does not open with ANDROID_KEYSTORE_PASSWORD, or has no key named twocan. If the size or SHA-256 above differs from your twocan-release.p12, the secret is cut short or damaged: set it again (see the README)."
+            exit 1
+          fi
           export TWOCAN_VERSION="${GITHUB_REF_NAME#v}"
           ./gradlew --console=plain assembleRelease
           apk=app/build/outputs/apk/release/app-release.apk
