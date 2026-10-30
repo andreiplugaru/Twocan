@@ -1,6 +1,11 @@
 package app.twocan
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import androidx.core.content.edit
 import app.twocan.go.mobile.Listener
 import app.twocan.go.mobile.Mobile
@@ -38,6 +43,7 @@ class Twocan(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex() // serialises start and stop
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
 
     /** Identity, contacts, history and the log live here. */
     val dataDir = File(context.filesDir, "twocan")
@@ -81,6 +87,22 @@ class Twocan(context: Context) {
         }
     }
 
+    /**
+     * Tells the node when a network comes or goes, or its addresses change
+     * (switching between Wi-Fi and mobile data), so it drops connections that
+     * stopped working and reconnects at once instead of after they time out.
+     * The node groups the burst of callbacks one change brings.
+     */
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = networkChanged()
+        override fun onLost(network: Network) = networkChanged()
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) = networkChanged()
+    }
+
+    private fun networkChanged() {
+        node?.networkChanged()
+    }
+
     /** The app came on screen: start the node, or keep it running. */
     fun onForeground() {
         stopJob?.cancel()
@@ -105,6 +127,7 @@ class Twocan(context: Context) {
                 try {
                     val n = Mobile.start(dataDir.path, bootstrap, "info", listener)
                     node = n
+                    watchNetwork()
                     _displayName.value = n.displayName()
                     _reachability.value = n.reachability()
                     _state.value = State.Running
@@ -121,9 +144,23 @@ class Twocan(context: Context) {
         lock.withLock {
             val n = node ?: return
             node = null
+            unwatchNetwork()
             _state.value = State.Stopped
             withContext(Dispatchers.IO) { runCatching { n.stop() } }
         }
+    }
+
+    // Best effort: without the callback, broken connections still time out
+    // and are reconnected, only later.
+    private fun watchNetwork() {
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        runCatching { connectivity.registerNetworkCallback(request, networkCallback) }
+    }
+
+    private fun unwatchNetwork() {
+        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
     }
 
     /** Stops and starts the node, e.g. after the helper addresses changed. */

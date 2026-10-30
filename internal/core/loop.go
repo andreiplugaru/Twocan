@@ -34,13 +34,21 @@ const (
 	maxDirectFactor = 30
 	// directTimeout bounds one such dial.
 	directTimeout = 30 * time.Second
+	// A contact that disconnects is reached again at once, then after
+	// defaultReconnect, doubling, reconnectTries times in all (about a
+	// minute) before the presence sweep takes over: a network switch takes
+	// a few seconds to settle, on either side.
+	defaultReconnect = 2 * time.Second
+	reconnectTries   = 6
+	// reconnectTimeout bounds one such attempt.
+	reconnectTimeout = 30 * time.Second
 	// maxSavedAddrs caps the addrs stored for a contact on connect.
 	maxSavedAddrs = 8
 )
 
 // intervals are the loop periods; tests shorten them (zero: default).
 type intervals struct {
-	tick, presence, direct time.Duration
+	tick, presence, direct, reconnect, settle time.Duration
 }
 
 // directDialer is what moving a contact off the relay needs from the libp2p
@@ -128,9 +136,9 @@ func (n *Node) run(ctx context.Context, p2pEvents <-chan any, busEvents <-chan a
 }
 
 // onConnectedness handles a connection change to id. For a contact it
-// publishes Connectivity; on connect it also protects the connection, saves
-// the peer's addrs, sends an accepted contact our addresses and flushes
-// right away.
+// publishes Connectivity; on disconnect an accepted contact is reached
+// again; on connect it also protects the connection, saves the peer's
+// addrs, sends an accepted contact our addresses and flushes right away.
 func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 	c, err := n.st.GetContact(ctx, id)
 	if err != nil {
@@ -142,6 +150,9 @@ func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 		n.noteDisconnected(id)
 		n.log.Info("contact disconnected", "peer", id)
 		n.bus.Publish(event.Connectivity{Peer: id})
+		if c.State == store.StateAccepted {
+			n.reconnect(id)
+		}
 		return
 	}
 	var remotes []ma.Multiaddr
@@ -164,6 +175,60 @@ func (n *Node) onConnectedness(ctx context.Context, id peer.ID) {
 	}
 	n.resetPeer(id)
 	n.schedule(id, time.Now())
+}
+
+// reconnect reaches id, an accepted contact that just disconnected, in the
+// background: at once, then a few more times at growing intervals until it
+// is connected again. At most one runs per contact.
+func (n *Node) reconnect(id peer.ID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if _, ok := n.rejoining[id]; ok {
+		return
+	}
+	n.rejoining[id] = time.Now()
+	if !n.loops.Go(func(ctx context.Context) { n.rejoin(ctx, id) }) {
+		delete(n.rejoining, id)
+	}
+}
+
+// rejoin is reconnect's work.
+func (n *Node) rejoin(ctx context.Context, id peer.ID) {
+	defer func() {
+		n.mu.Lock()
+		delete(n.rejoining, id)
+		n.mu.Unlock()
+	}()
+	for try := range reconnectTries {
+		if connected, _ := n.connInfo(id); connected {
+			return
+		}
+		rctx, cancel := context.WithTimeout(ctx, reconnectTimeout)
+		err := n.r.Reach(rctx, id)
+		cancel()
+		if err == nil {
+			n.log.Info("reconnected", "peer", id, "try", try+1)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if try == reconnectTries-1 {
+			n.log.Info("could not reconnect; the presence sweep tries again", "peer", id, "err", err)
+			return
+		}
+		wait := n.iv.reconnect << try
+		n.mu.Lock()
+		n.noteProblemLocked(id, err)
+		n.rejoining[id] = time.Now().Add(wait)
+		n.mu.Unlock()
+		n.log.Info("could not reconnect yet", "peer", id, "try", try+1, "next_in", wait, "err", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
 }
 
 // contactAddrsArrived runs when contact id sent its addresses: they are

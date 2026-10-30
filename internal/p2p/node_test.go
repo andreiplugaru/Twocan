@@ -2,6 +2,8 @@ package p2p
 
 import (
 	"crypto/rand"
+	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -74,6 +76,26 @@ func TestReachViaPeerstoreAddrs(t *testing.T) {
 
 	// Already connected: Reach is a no-op success.
 	require.NoError(t, a.Reach(t.Context(), b.Host().ID()))
+}
+
+// A failed Reach does not hold back the next one: right after a network
+// switch the first tries fail, and the retries must really dial.
+func TestReachRetriesRightAfterAFailure(t *testing.T) {
+	a := newTestNode(t)
+	key := newTestKey(t)
+	bID, err := peer.IDFromPrivateKey(key)
+	require.NoError(t, err)
+	// A port with nothing listening yet: the first Reach is refused.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := l.Addr().(*net.TCPAddr).Port
+	require.NoError(t, l.Close())
+	addr := fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", port)
+	a.Host().Peerstore().AddAddrs(bID, []ma.Multiaddr{ma.StringCast(addr)}, time.Hour)
+	require.Error(t, a.Reach(t.Context(), bID))
+
+	newTestNodeCfg(t, Config{PrivKey: key, ListenAddrs: []string{addr}})
+	require.NoError(t, a.Reach(t.Context(), bID))
 }
 
 func TestConnInfoNotConnected(t *testing.T) {

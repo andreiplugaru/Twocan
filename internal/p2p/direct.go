@@ -74,6 +74,18 @@ func (n *Node) closeRelayed(id peer.ID) {
 	}
 }
 
+// circuitAddrs returns the relay address of a peer on each of helpers, for
+// dialling that peer: each helper address followed by /p2p/<helper>/p2p-circuit.
+func circuitAddrs(helpers []peer.AddrInfo) []ma.Multiaddr {
+	var addrs []ma.Multiaddr
+	for _, h := range helpers {
+		for _, a := range h.Addrs {
+			addrs = append(addrs, a.Encapsulate(ma.StringCast("/p2p/"+h.ID.String()+"/p2p-circuit")))
+		}
+	}
+	return addrs
+}
+
 // directAddrs returns id's known addresses that are not through a relay.
 func (n *Node) directAddrs(id peer.ID) []ma.Multiaddr {
 	var addrs []ma.Multiaddr

@@ -163,6 +163,8 @@ func TestLogsConnectionsAndNeverMessageText(t *testing.T) {
 	require.NoError(t, err)
 	waitEvent(t, aEvents, func(e event.MessageDelivered) bool { return bytes.Equal(e.ID, m.ID) })
 
+	// Unlinked, so neither side reconnects before A sees the disconnect.
+	require.NoError(t, mn.UnlinkPeers(a.PeerID(), b.PeerID()))
 	require.NoError(t, mn.DisconnectPeers(a.PeerID(), b.PeerID()))
 	waitEvent(t, aEvents, func(e event.Connectivity) bool { return e.Peer == b.PeerID() && !e.Connected })
 	require.Contains(t, alogs.String(), `msg="contact disconnected" component=core peer=`+b.PeerID().String())
