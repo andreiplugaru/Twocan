@@ -169,6 +169,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error) {
 
 	bgCtx, cancel := context.WithCancel(ctx)
 	n.cancel = cancel
+	h.Network().Notify(n.newConnWatcher(bgCtx))
 	n.wg.Add(2)
 	go func() {
 		defer n.wg.Done()
