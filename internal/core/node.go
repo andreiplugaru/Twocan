@@ -65,6 +65,9 @@ type Options struct {
 	// InterfaceIPs, if set, lists this machine's IPs where libp2p cannot
 	// (Android): see p2p.Config.InterfaceIPs.
 	InterfaceIPs func() ([]net.IP, error)
+	// WatchNetwork makes the node notice network changes itself (Linux),
+	// as NetworkChanged does; the Android app calls that instead.
+	WatchNetwork bool
 	// Log receives the node's events (nil: discard). Never message text or keys.
 	Log *slog.Logger
 }
@@ -225,6 +228,13 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		return nil, err
 	}
 	n.pn, n.cancelNode = pn, cancel
+	if opts.WatchNetwork {
+		n.loops.Go(func(ctx context.Context) {
+			if err := watchNetlink(ctx, n.NetworkChanged); err != nil {
+				n.log.Warn("not watching for network changes", "err", err)
+			}
+		})
+	}
 	return n, nil
 }
 
