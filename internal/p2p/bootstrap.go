@@ -27,11 +27,13 @@ func splitAddrs(s string) []string {
 	return out
 }
 
-// ParseBootstrap parses bootstrap multiaddrs into AddrInfos. Blank strings are
-// skipped; any other string that is not a multiaddr with a /p2p/ component is
-// an error.
+// ParseBootstrap parses bootstrap multiaddrs into AddrInfos, one per helper:
+// the addresses of a helper listed more than once (its TCP and QUIC ones)
+// are merged, in order. Blank strings are skipped; any other string that is
+// not a multiaddr with a /p2p/ component is an error.
 func ParseBootstrap(addrs []string) ([]peer.AddrInfo, error) {
 	var parsed []peer.AddrInfo
+	at := map[peer.ID]int{}
 	for _, s := range addrs {
 		s = strings.TrimSpace(s)
 		if s == "" {
@@ -41,6 +43,11 @@ func ParseBootstrap(addrs []string) ([]peer.AddrInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse bootstrap addr %q: %w", s, err)
 		}
+		if i, ok := at[info.ID]; ok {
+			parsed[i].Addrs = append(parsed[i].Addrs, info.Addrs...)
+			continue
+		}
+		at[info.ID] = len(parsed)
 		parsed = append(parsed, *info)
 	}
 	return parsed, nil

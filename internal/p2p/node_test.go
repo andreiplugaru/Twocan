@@ -216,6 +216,25 @@ func TestParseBootstrap(t *testing.T) {
 	require.Error(t, err)
 }
 
+// One helper listed with several addresses is one helper: autorelay waits
+// (3 minutes) for as many relays as there are entries.
+func TestParseBootstrapMergesAHelpersAddresses(t *testing.T) {
+	a, err := peer.IDFromPrivateKey(newTestKey(t))
+	require.NoError(t, err)
+	b, err := peer.IDFromPrivateKey(newTestKey(t))
+	require.NoError(t, err)
+	infos, err := ParseBootstrap([]string{
+		"/ip4/1.2.3.4/tcp/4001/p2p/" + a.String(),
+		"/ip4/5.6.7.8/tcp/4001/p2p/" + b.String(),
+		"/ip4/1.2.3.4/udp/4001/quic-v1/p2p/" + a.String(),
+	})
+	require.NoError(t, err)
+	require.Len(t, infos, 2)
+	require.Equal(t, a, infos[0].ID)
+	require.Equal(t, []string{"/ip4/1.2.3.4/tcp/4001", "/ip4/1.2.3.4/udp/4001/quic-v1"}, addrStrings(infos[0].Addrs))
+	require.Equal(t, b, infos[1].ID)
+}
+
 func TestReachabilityInitiallyUnknown(t *testing.T) {
 	n := newTestNode(t)
 	require.Equal(t, network.ReachabilityUnknown, n.Reachability())
