@@ -308,6 +308,11 @@ func (n *Node) dialDirect(ctx context.Context, id peer.ID, ls *leaveState) {
 // addrs, direct ones first: relay addresses can be rebuilt from the helper,
 // so they must not crowd out the direct ones.
 func (n *Node) saveAddrs(ctx context.Context, id peer.ID) {
+	// Saves run one at a time, so a slow one cannot store its older view
+	// of the peerstore over a newer one (such as the addresses a contact
+	// just sent).
+	n.saveMu.Lock()
+	defer n.saveMu.Unlock()
 	var direct, relay []ma.Multiaddr
 	for _, a := range n.h.Peerstore().Addrs(id) {
 		switch {

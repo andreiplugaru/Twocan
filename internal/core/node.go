@@ -149,6 +149,8 @@ type Node struct {
 	leaving   map[peer.ID]*leaveState // contacts we try to move off the relay
 	rejoining map[peer.ID]time.Time   // contacts being reconnected: when the next try is
 
+	saveMu sync.Mutex // serialises saveAddrs
+
 	stopOnce sync.Once
 	stopErr  error
 }
