@@ -111,6 +111,7 @@ type API interface {
 	ContactDetails(ctx context.Context, id peer.ID) (ContactDetails, error)
 	Ping(ctx context.Context, id peer.ID) (time.Duration, error)
 	CheckConnection(ctx context.Context, id peer.ID, report func(int, p2p.Step)) (p2p.CheckResult, error)
+	NetworkChanged()
 	Stop() error
 }
 
@@ -129,21 +130,26 @@ type Node struct {
 	chat     *chat.Service
 	addrs    *addrshare.Service
 	dialer   directDialer // r, if it can dial without the relay (nil under startWith in tests)
+	net      netWatcher   // r, if it can check connections after a network change (likewise)
 
 	// Set by Start only (nil under startWith): the libp2p node and the
 	// cancel func of its lifetime context.
 	pn         *p2p.Node
 	cancelNode context.CancelFunc
 
-	iv    intervals
-	loops *svc.Tracker
-	reach atomic.Int32 // network.Reachability
+	iv        intervals
+	loops     *svc.Tracker
+	reach     atomic.Int32  // network.Reachability
+	netChange chan struct{} // NetworkChanged's signal to watchNetwork
 
-	mu        sync.Mutex // guards peers, health, nextSweep and leaving
+	mu        sync.Mutex // guards peers, health, nextSweep, leaving and rejoining
 	peers     map[peer.ID]*peerState
 	health    map[peer.ID]*health
 	nextSweep time.Time               // when the presence sweep runs next
 	leaving   map[peer.ID]*leaveState // contacts we try to move off the relay
+	rejoining map[peer.ID]time.Time   // contacts being reconnected: when the next try is
+
+	saveMu sync.Mutex // serialises saveAddrs
 
 	stopOnce sync.Once
 	stopErr  error
@@ -241,6 +247,12 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	if iv.direct == 0 {
 		iv.direct = defaultDirect
 	}
+	if iv.reconnect == 0 {
+		iv.reconnect = defaultReconnect
+	}
+	if iv.settle == 0 {
+		iv.settle = defaultSettle
+	}
 	cs, err := st.ListContacts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("core: list contacts: %w", err)
@@ -267,20 +279,23 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 	}
 
 	n := &Node{
-		h:        h,
-		st:       st,
-		r:        r,
-		connInfo: connInfo,
-		log:      nodeLog,
-		bus:      event.NewBus(),
-		iv:       iv,
-		loops:    svc.NewTracker(),
-		peers:    make(map[peer.ID]*peerState),
-		health:   make(map[peer.ID]*health),
-		leaving:  make(map[peer.ID]*leaveState),
+		h:         h,
+		st:        st,
+		r:         r,
+		connInfo:  connInfo,
+		log:       nodeLog,
+		bus:       event.NewBus(),
+		iv:        iv,
+		loops:     svc.NewTracker(),
+		peers:     make(map[peer.ID]*peerState),
+		health:    make(map[peer.ID]*health),
+		leaving:   make(map[peer.ID]*leaveState),
+		rejoining: make(map[peer.ID]time.Time),
+		netChange: make(chan struct{}, 1),
 	}
 	n.diag, _ = r.(diagnoser)
 	n.dialer, _ = r.(directDialer)
+	n.net, _ = r.(netWatcher)
 	n.reach.Store(int32(network.ReachabilityUnknown))
 	n.contacts = contacts.New(h, st, r, n.bus, n.DisplayName)
 	n.chat = chat.New(h, st, r, n.bus)
@@ -301,6 +316,7 @@ func startWith(ctx context.Context, h host.Host, st *store.Store, r p2p.Reacher,
 		defer cancelBus()
 		n.run(ctx, sub.Out(), busEvents)
 	})
+	n.loops.Go(n.watchNetwork)
 	return n, nil
 }
 

@@ -255,4 +255,5 @@ func (f *fakeAPI) CheckConnection(_ context.Context, _ peer.ID, report func(int,
 	}
 	return f.check, f.checkErr
 }
-func (f *fakeAPI) Stop() error { return nil }
+func (f *fakeAPI) NetworkChanged() {}
+func (f *fakeAPI) Stop() error     { return nil }

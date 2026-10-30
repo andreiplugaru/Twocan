@@ -24,6 +24,7 @@ Grab the binaries from the [latest release](https://github.com/andreiplugaru/Two
 | `twocan-linux-amd64` | Desktop app (x86-64). Needs the usual desktop OpenGL, X11, Wayland and xkbcommon libraries, which are already installed on any Linux desktop |
 | `twocan-cli-linux-amd64`, `twocan-cli-linux-arm64` | Terminal client (static, no dependencies) |
 | `twocan-helper-linux-amd64`, `twocan-helper-linux-arm64` | Helper server (static), plus `twocan-helper.service` |
+| `twocan-android.apk` | Android app (Android 8 and up): open it on the phone and allow installing apps from that source |
 | `SHA256SUMS` | Checksums: `sha256sum -c SHA256SUMS --ignore-missing` |
 
 ```bash
@@ -141,6 +142,8 @@ The Android app (Android 8 and up) does everything the desktop app does: your ca
 
 It finds contacts through the helper only: Android does not let apps list the network interfaces the way local-network discovery (mDNS) needs, so two phones on the same Wi-Fi still need the helper to find each other. Once found, they connect directly over the Wi-Fi.
 
+Install `twocan-android.apk` from the [latest release](https://github.com/andreiplugaru/Twocan/releases/latest), or build it yourself (below). Install later releases over it: Android only accepts an update signed with the same key, so an APK you built yourself and a release APK cannot update each other. Switching between them means uninstalling, which **deletes your identity and history**, and contacts would have to add you again.
+
 ### Building it
 
 You need Go, a JDK (17 or newer), and the Android SDK with the NDK. Android Studio installs the SDK; without it, use the [command-line tools](https://developer.android.com/studio#command-line-tools-only):
@@ -203,12 +206,35 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs vet, the race-e
 ## Releases
 
 1. **Once:** in GitHub, go to *Settings → Secrets and variables → Actions → Variables* and add `TWOCAN_BOOTSTRAP`. Its value is your helper's addresses, comma-separated, e.g. `/ip4/203.0.113.7/tcp/4001/p2p/12D3KooW...,/ip4/203.0.113.7/udp/4001/quic-v1/p2p/12D3KooW...`. This is optional; without it, users pass `--bootstrap`.
-2. **Each release:** tag and push.
+   For the Android app, also add two *Secrets* (same page, *Secrets* tab), made from the release signing key (see [Signing the Android app](#signing-the-android-app)). Without them the release fails.
+2. **Each release:** tag and push. The tag must look like `v1.2.3`: the Android app's version comes from it.
    ```bash
    git tag v0.1.0
    git push origin v0.1.0
    ```
-   [`.github/workflows/release.yml`](.github/workflows/release.yml) reruns the full test suite. It then builds the binaries listed under [Download](#download) with the helper addresses baked in, and publishes them as a GitHub release with generated notes.
+   [`.github/workflows/release.yml`](.github/workflows/release.yml) reruns the full test suite. It then builds the binaries listed under [Download](#download) and the signed Android app with the helper addresses baked in, and publishes them as a GitHub release with generated notes.
+
+### Signing the Android app
+
+Phones install a new release over the old one only if both are signed with the same key, so **every release must use the same key, forever**. If it is lost, users cannot update and would have to uninstall, losing their identity and history. Keep a backup of the key file and its password somewhere safe, off this computer.
+
+Make the key once (PKCS12, alias `twocan`, valid for 100 years):
+
+```bash
+mkdir -m 700 ~/twocan-release-key && cd ~/twocan-release-key
+(umask 077; openssl rand -base64 32 | tr -d '\n' > password.txt)
+keytool -genkeypair -keystore twocan-release.p12 -storetype PKCS12 -alias twocan \
+  -keyalg RSA -keysize 4096 -validity 36500 -dname "CN=Twocan" -storepass:file password.txt
+```
+
+Add it as two repository secrets:
+
+```bash
+base64 -w0 twocan-release.p12 | gh secret set ANDROID_KEYSTORE_BASE64
+gh secret set ANDROID_KEYSTORE_PASSWORD < password.txt
+```
+
+To build a signed release APK locally, set `TWOCAN_KEYSTORE` to the key file, `TWOCAN_KEYSTORE_PASSWORD` to its password and `TWOCAN_VERSION` to the version (`1.2.3`), then run `./gradlew assembleRelease` in `android/`.
 
 ### Deploying the helper automatically
 

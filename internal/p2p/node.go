@@ -209,17 +209,33 @@ func (n *Node) Close() error {
 }
 
 // Reach makes sure there is a connection to id: an existing one, else a dial
-// to the addresses already in the peerstore, else a dial to addresses found
-// through the DHT. Relayed (limited) connections count.
+// to the addresses already in the peerstore and to id's relay address on
+// each helper, else a dial to addresses found through the DHT. Relayed
+// (limited) connections count. Earlier failed dials do not hold it back:
+// its callers space out their own retries.
 func (n *Node) Reach(ctx context.Context, id peer.ID) error {
 	if connected, _ := n.ConnInfo(id); connected {
 		return nil
 	}
 	ctx = network.WithAllowLimitedConn(ctx, "twocan")
 	start := time.Now()
+	n.clearBackoff(id)
+	// The relay addresses need no lookup, which fails while the connection
+	// to the helper is down or new (after a network switch). libp2p dials
+	// them shortly after the direct ones, so stale direct addresses do not
+	// hold the relay up.
+	var helpers []peer.AddrInfo
+	for _, b := range n.boot {
+		if b.ID != id {
+			n.clearBackoff(b.ID)
+			helpers = append(helpers, b)
+		}
+	}
+	relay := circuitAddrs(helpers)
+	n.origins.addHelper(id, relay)
 
 	// Dial errors from libp2p list every address tried and why it failed.
-	if addrs := n.host.Peerstore().Addrs(id); len(addrs) > 0 {
+	if addrs := ma.Unique(append(n.host.Peerstore().Addrs(id), relay...)); len(addrs) > 0 {
 		err := n.connect(ctx, peer.AddrInfo{ID: id, Addrs: addrs})
 		if err == nil {
 			n.log.Info("reached peer", "peer", id, "via", "known addresses", "took", time.Since(start).Round(time.Millisecond))

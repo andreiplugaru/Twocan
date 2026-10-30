@@ -129,14 +129,20 @@ func (n *Node) ContactDetails(ctx context.Context, id peer.ID) (ContactDetails, 
 }
 
 // nextAttemptLocked is when id is next reached: its retry, if it has
-// pending work, or the presence sweep for an accepted contact, whichever
-// comes first. n.mu must be held.
+// pending work, its next reconnect try, or the presence sweep for an
+// accepted contact, whichever comes first. n.mu must be held.
 func (n *Node) nextAttemptLocked(id peer.ID, state store.ContactState, now time.Time) time.Time {
 	var next time.Time
 	if ps, ok := n.peers[id]; ok && !ps.parked {
 		next = ps.due
 		if next.Before(now) {
 			next = now // due already: on the next tick
+		}
+	}
+	if due, ok := n.rejoining[id]; ok && (next.IsZero() || due.Before(next)) {
+		next = due
+		if next.Before(now) {
+			next = now // trying now
 		}
 	}
 	if state == store.StateAccepted && !n.nextSweep.IsZero() && (next.IsZero() || n.nextSweep.Before(next)) {
@@ -153,7 +159,11 @@ func (n *Node) Ping(ctx context.Context, id peer.ID) (time.Duration, error) {
 	}
 	ctx, cancel := context.WithTimeout(network.WithAllowLimitedConn(ctx, "twocan-ping"), pingTimeout)
 	defer cancel()
-	res := <-ping.Ping(ctx, n.h, id)
+	// Ping closes the channel without a result when ctx ends.
+	res, ok := <-ping.Ping(ctx, n.h, id)
+	if !ok {
+		return 0, ctx.Err()
+	}
 	return res.RTT, res.Error
 }
 

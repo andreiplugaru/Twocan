@@ -126,6 +126,7 @@ func (f *fakeAPI) record(format string, args ...any) {
 func (f *fakeAPI) MarkRead(context.Context, peer.ID) error { return nil }
 func (f *fakeAPI) Subscribe() (<-chan any, func())         { return f.events, func() {} }
 func (f *fakeAPI) Reachability() network.Reachability      { return network.ReachabilityUnknown }
+func (f *fakeAPI) NetworkChanged()                         {}
 func (f *fakeAPI) Stop() error                             { return nil }
 func (f *fakeAPI) ContactDetails(context.Context, peer.ID) (core.ContactDetails, error) {
 	return f.details, nil

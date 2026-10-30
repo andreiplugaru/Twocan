@@ -2,6 +2,7 @@ package core
 
 import (
 	"crypto/rand"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -13,18 +14,14 @@ import (
 
 	"twocan/internal/helper"
 	"twocan/internal/identity"
+	"twocan/internal/logtest"
 	"twocan/internal/p2p"
 	"twocan/internal/store"
 )
 
-// TestChatThroughRelay: B listens on nothing and believes it is behind a NAT,
-// so the only way to reach it is the helper's circuit relay. A knows only B's
-// peer ID and must find B's relay address through the private DHT.
-func TestChatThroughRelay(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration test: real libp2p hosts on loopback")
-	}
-
+// startHelper starts a helper on loopback and returns its bootstrap address.
+func startHelper(t *testing.T) []string {
+	t.Helper()
 	key, _, err := crypto.GenerateEd25519Key(rand.Reader)
 	require.NoError(t, err)
 	// Autorelay builds circuit addrs only from a relay's public addrs, so the
@@ -47,23 +44,30 @@ func TestChatThroughRelay(t *testing.T) {
 		}
 	}
 	require.Len(t, boot, 1)
+	return boot
+}
 
-	startNode := func(listen []string, forcePrivate bool) *Node {
-		n, err := Start(t.Context(), Options{
-			DataDir:      t.TempDir(),
-			Bootstrap:    boot,
-			ListenAddrs:  listen,
-			ForcePrivate: forcePrivate,
-		})
-		require.NoError(t, err)
-		t.Cleanup(func() { require.NoError(t, n.Stop()) })
-		return n
-	}
-	a := startNode([]string{"/ip4/127.0.0.1/tcp/0"}, false)
-	b := startNode([]string{}, true)
+// startHelped starts a real node using the helper at boot.
+func startHelped(t *testing.T, boot, listen []string, forcePrivate bool, log *slog.Logger) *Node {
+	t.Helper()
+	n, err := Start(t.Context(), Options{
+		DataDir:      t.TempDir(),
+		Bootstrap:    boot,
+		ListenAddrs:  listen,
+		ForcePrivate: forcePrivate,
+		Log:          log,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, n.Stop()) })
+	return n
+}
 
+// waitRelayAddr waits until n's card offers a relay address: n holds a
+// reservation on the helper.
+func waitRelayAddr(t *testing.T, n *Node) {
+	t.Helper()
 	require.Eventually(t, func() bool {
-		s, err := b.MyCard()
+		s, err := n.MyCard()
 		if err != nil {
 			return false
 		}
@@ -77,9 +81,22 @@ func TestChatThroughRelay(t *testing.T) {
 			}
 		}
 		return false
-	}, 30*time.Second, 50*time.Millisecond, "B got no relay address")
+	}, 30*time.Second, 50*time.Millisecond, "no relay address")
+}
 
-	// A card with B's peer ID only: A has to look B up in the DHT.
+// TestChatThroughRelay: B listens on nothing and believes it is behind a NAT,
+// so the only way to reach it is the helper's circuit relay. A knows only B's
+// peer ID and reaches B through its relay address on the helper.
+func TestChatThroughRelay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: real libp2p hosts on loopback")
+	}
+	boot := startHelper(t)
+	a := startHelped(t, boot, []string{"/ip4/127.0.0.1/tcp/0"}, false, nil)
+	b := startHelped(t, boot, []string{}, true, nil)
+	waitRelayAddr(t, b)
+
+	// A card with B's peer ID only: A has no address for B.
 	require.Empty(t, a.h.Peerstore().Addrs(b.PeerID()))
 	card, err := identity.EncodeCard(identity.Card{PeerID: b.PeerID()})
 	require.NoError(t, err)
@@ -124,4 +141,24 @@ func TestChatThroughRelay(t *testing.T) {
 	}
 	require.Equal(t, p2p.StepOK, statusOf["Helper"])
 	require.Equal(t, p2p.StepOK, statusOf["Relay connection"])
+}
+
+// Reach tries a contact's relay address on the helper without looking it
+// up: right after a network switch the lookup fails, as the connection to
+// the helper is new or not there yet.
+func TestReachTriesTheRelayWithoutLookup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: real libp2p hosts on loopback")
+	}
+	boot := startHelper(t)
+	log, logs := logtest.New()
+	a := startHelped(t, boot, []string{"/ip4/127.0.0.1/tcp/0"}, false, log)
+	b := startHelped(t, boot, []string{}, true, nil)
+	waitRelayAddr(t, b)
+
+	require.Empty(t, a.h.Peerstore().Addrs(b.PeerID()))
+	require.NoError(t, a.pn.Reach(t.Context(), b.PeerID()))
+	require.NotContains(t, logs.String(), `msg="dht found peer"`, "B was reached without a lookup")
+	_, relayed := a.connInfo(b.PeerID())
+	require.True(t, relayed)
 }

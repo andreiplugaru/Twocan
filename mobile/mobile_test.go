@@ -2,6 +2,8 @@ package mobile
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,4 +246,13 @@ func TestEventJSONUpdatesAndTyping(t *testing.T) {
 	assert.JSONEq(t, `{"type":"updated","peer":"","ids":["0102"]}`, js)
 	_, ok = eventJSON(event.Typing{})
 	require.True(t, ok)
+}
+
+func TestNetworkChangedChecksConnections(t *testing.T) {
+	ana, _ := startNode(t, "Ana")
+	ana.NetworkChanged()
+	require.Eventually(t, func() bool {
+		b, err := os.ReadFile(ana.log.Path)
+		return err == nil && strings.Contains(string(b), `msg="network changed: checking connections"`)
+	}, 10*time.Second, 50*time.Millisecond)
 }

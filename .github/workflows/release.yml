@@ -12,8 +12,52 @@ jobs:
   test:
     uses: ./.github/workflows/ci.yml
 
-  release:
+  # The signed Android app. The key comes from two repository secrets (see
+  # the README); without them the release fails rather than publish an APK
+  # that phones would not install as an update.
+  android:
     needs: test
+    runs-on: ubuntu-latest
+    env:
+      TWOCAN_BOOTSTRAP: ${{ vars.TWOCAN_BOOTSTRAP }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Build the signed APK
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          TWOCAN_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$TWOCAN_KEYSTORE_PASSWORD" ]; then
+            echo "::error::Set the ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD secrets (see the README)."
+            exit 1
+          fi
+          export TWOCAN_KEYSTORE="$RUNNER_TEMP/release.p12"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$TWOCAN_KEYSTORE"
+          export TWOCAN_VERSION="${GITHUB_REF_NAME#v}"
+          ./gradlew --console=plain assembleRelease
+          apk=app/build/outputs/apk/release/app-release.apk
+          "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify --print-certs "$apk"
+          mkdir -p ../dist && cp "$apk" ../dist/twocan-android.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/twocan-android.apk
+          if-no-files-found: error
+
+  release:
+    needs: [test, android]
     # Built on an older Ubuntu so the desktop binary runs on older glibc too.
     runs-on: ubuntu-22.04
     env:
@@ -30,10 +74,15 @@ jobs:
       - name: Install Fyne build dependencies
         run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: android
+          path: dist
+
       - name: Build
         run: |
           ldflags="-s -w -X twocan/internal/p2p.bootstrapAddrs=${TWOCAN_BOOTSTRAP}"
-          mkdir dist
+          mkdir -p dist
           go build -trimpath -ldflags "$ldflags" -o dist/twocan-linux-amd64 ./cmd/twocan
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOARCH=$arch go build -trimpath -ldflags "$ldflags" -o "dist/twocan-cli-linux-$arch" ./cmd/twocan-cli

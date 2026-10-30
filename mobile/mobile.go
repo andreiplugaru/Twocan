@@ -408,6 +408,11 @@ func (n *Node) Ping(peerID string) (int64, error) {
 	return rtt.Milliseconds(), friendly(err)
 }
 
+// NetworkChanged tells the node that a network came or went, or its
+// addresses changed: connections that stopped answering are closed and
+// contacts are reached again at once. It returns at once.
+func (n *Node) NetworkChanged() { n.api.NetworkChanged() }
+
 // Check is a running connection check.
 type Check struct{ cancel context.CancelFunc }
 

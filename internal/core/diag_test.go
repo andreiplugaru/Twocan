@@ -1,10 +1,14 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"github.com/stretchr/testify/require"
 
 	"twocan/internal/store"
@@ -85,7 +89,7 @@ func TestNoteProblemKeepsTheCauseOverBackoff(t *testing.T) {
 	a.mu.Unlock()
 }
 
-func TestNextAttemptIsTheSoonerOfRetryAndSweep(t *testing.T) {
+func TestNextAttemptIsTheSoonest(t *testing.T) {
 	mn := newMocknet(t)
 	a := newMockNode(t, mn, intervals{})
 	id := randomPeer(t)
@@ -105,4 +109,29 @@ func TestNextAttemptIsTheSoonerOfRetryAndSweep(t *testing.T) {
 	require.Equal(t, now, a.nextAttemptLocked(id, store.StatePendingOutgoing, now), "overdue: now")
 	a.peers[id].parked = true
 	require.True(t, a.nextAttemptLocked(id, store.StatePendingOutgoing, now).IsZero(), "parked: nothing scheduled")
+
+	a.rejoining[id] = now.Add(5 * time.Second)
+	require.Equal(t, now.Add(5*time.Second), a.nextAttemptLocked(id, store.StateAccepted, now), "reconnect try before sweep")
+	a.peers[id] = &peerState{due: now.Add(2 * time.Second)}
+	require.Equal(t, now.Add(2*time.Second), a.nextAttemptLocked(id, store.StateAccepted, now), "retry before reconnect try")
+	delete(a.peers, id)
+	a.rejoining[id] = now.Add(-time.Second)
+	require.Equal(t, now, a.nextAttemptLocked(id, store.StateAccepted, now), "reconnect try running: now")
+}
+
+// A ping nobody answers is an error, not a 0 ms round trip.
+func TestPingWithoutAnswerFails(t *testing.T) {
+	mn := newMocknet(t)
+	a, b := newMockNode(t, mn, intervals{}), newMockNode(t, mn, intervals{})
+	require.NoError(t, mn.LinkAll())
+	befriend(t, a, b)
+	// B reads pings and never answers, as over a connection that stopped
+	// working.
+	b.h.SetStreamHandler(ping.ID, func(s network.Stream) { _, _ = io.Copy(io.Discard, s) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	rtt, err := a.Ping(ctx, b.PeerID())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, rtt)
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
-	ma "github.com/multiformats/go-multiaddr"
 )
 
 const (
@@ -255,12 +254,7 @@ func (c *checker) relay(ctx context.Context) (StepStatus, string) {
 	}
 	// The helper is the only relay, so its circuit address for them is
 	// known even when the lookup gave none.
-	var addrs []ma.Multiaddr
-	for _, h := range c.helpers {
-		for _, a := range h.Addrs {
-			addrs = append(addrs, a.Encapsulate(ma.StringCast("/p2p/"+h.ID.String()+"/p2p-circuit")))
-		}
-	}
+	addrs := circuitAddrs(c.helpers)
 	c.n.origins.addHelper(c.id, addrs)
 	ctx, cancel := context.WithTimeout(network.WithAllowLimitedConn(ctx, "twocan-check"), relayDialTimeout)
 	defer cancel()
