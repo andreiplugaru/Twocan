@@ -3,6 +3,25 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Release builds take their version from the tag (TWOCAN_VERSION=0.2.1 for
+// v0.2.1). Android installs an update only over a lower versionCode, so it
+// grows with each release: 2001 for 0.2.1.
+val releaseVersion: String? = providers.environmentVariable("TWOCAN_VERSION").orNull
+
+fun versionCodeOf(version: String): Int {
+    val parts = version.split(".").map { it.toIntOrNull() }
+    require(parts.size == 3 && parts.all { it != null && it in 0..999 }) {
+        "TWOCAN_VERSION must look like 1.2.3, got \"$version\""
+    }
+    val (major, minor, patch) = parts.map { it!! }
+    return major * 1_000_000 + minor * 1_000 + patch
+}
+
+// The release signing key: a PKCS12 file whose key, alias "twocan", has the
+// file's password. Every release must be signed with it, or phones will not
+// install it as an update (see the README).
+val keystore: String? = providers.environmentVariable("TWOCAN_KEYSTORE").orNull
+
 android {
     namespace = "app.twocan"
     compileSdk = 37
@@ -12,8 +31,19 @@ android {
         applicationId = "app.twocan"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseVersion?.let(::versionCodeOf) ?: 1
+        versionName = releaseVersion ?: "0.1.0"
+    }
+
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = providers.environmentVariable("TWOCAN_KEYSTORE_PASSWORD").get()
+                keyAlias = "twocan"
+                keyPassword = storePassword
+            }
+        }
     }
 
     buildFeatures {
@@ -31,6 +61,8 @@ android {
             // gomobile's generated classes are reached from Go through JNI,
             // so shrinking would remove them.
             isMinifyEnabled = false
+            // Unsigned without TWOCAN_KEYSTORE.
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 }
