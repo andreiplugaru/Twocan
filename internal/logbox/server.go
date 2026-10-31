@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -25,6 +26,11 @@ const (
 	ReadProtocol = "/twocan/logs-read/1.0.0"
 	// chunkSize is the most log bytes in one frame (frames are 64 KiB).
 	chunkSize = 60 << 10
+	// minRate (bytes/s) sets the default MaxDuration: an upload slower than
+	// this is cut off, so a trickle cannot hold a slot for long.
+	minRate = 16 << 10
+	// The longest detail fields kept, in characters.
+	maxDetail, maxNote = 64, 500
 )
 
 // ServerConfig configures Serve. Zero limits take their defaults.
@@ -33,7 +39,10 @@ type ServerConfig struct {
 	PerIP   int           // uploads an hour per sender IP (default 6)
 	PerPeer int           // uploads an hour per peer ID (default 3)
 	Idle    time.Duration // the longest wait for a frame (default 30 s)
-	Log     *slog.Logger  // nil: discard. Never given peer IDs or addresses.
+	// MaxDuration is the longest one upload may take (default: 2 Idle plus
+	// MaxUpload at 16 KiB/s).
+	MaxDuration time.Duration
+	Log         *slog.Logger // nil: discard. Never given peer IDs or addresses.
 }
 
 type server struct {
@@ -58,6 +67,9 @@ func Serve(h host.Host, st *Store, cfg ServerConfig) (stop func()) {
 	if cfg.Log == nil {
 		cfg.Log = logging.Discard()
 	}
+	if cfg.MaxDuration == 0 {
+		cfg.MaxDuration = 2*cfg.Idle + time.Duration(st.lim.MaxUpload/minRate)*time.Second
+	}
 	sv := &server{st: st, cfg: cfg, lim: newLimiter(cfg.PerIP, cfg.PerPeer, time.Hour), readers: map[peer.ID]bool{}}
 	for _, id := range cfg.Readers {
 		sv.readers[id] = true
@@ -78,28 +90,30 @@ func (sv *server) refuse(s network.Stream, why pb.Refusal) {
 	_ = s.Close()
 }
 
-// next reads the next frame, waiting at most Idle for it.
-func (sv *server) next(s network.Stream, r *bufio.Reader, m *pb.UploadFrame) error {
-	_ = s.SetReadDeadline(time.Now().Add(sv.cfg.Idle))
+// next reads the next frame, waiting at most Idle for it and never past
+// until (if set).
+func (sv *server) next(s network.Stream, r *bufio.Reader, m *pb.UploadFrame, until time.Time) error {
+	dl := time.Now().Add(sv.cfg.Idle)
+	if !until.IsZero() && until.Before(dl) {
+		dl = until
+	}
+	_ = s.SetReadDeadline(dl)
 	return wire.ReadFrame(r, m)
 }
 
 func (sv *server) upload(s network.Stream) {
-	if !sv.lim.acquire() {
-		sv.refuse(s, pb.Refusal_REFUSAL_RATE_LIMITED)
-		return
-	}
-	defer sv.lim.release()
+	// The start frame is read, and the sender counted, before a slot is
+	// taken: a stream that never starts must not hold one.
 	r := bufio.NewReader(s)
 	var f pb.UploadFrame
-	if err := sv.next(s, r, &f); err != nil || f.GetStart() == nil {
+	if err := sv.next(s, r, &f, time.Time{}); err != nil || f.GetStart() == nil {
 		s.Reset()
 		return
 	}
 	start := f.GetStart()
 	ip := ""
 	if a, err := manet.ToIP(s.Conn().RemoteMultiaddr()); err == nil {
-		ip = a.String()
+		ip = ipKey(a)
 	}
 	switch {
 	case sv.st.Off():
@@ -111,7 +125,12 @@ func (sv *server) upload(s network.Stream) {
 	case int64(start.Size) > sv.st.lim.MaxUpload:
 		sv.refuse(s, pb.Refusal_REFUSAL_TOO_LARGE)
 		return
+	case !sv.lim.acquire():
+		sv.refuse(s, pb.Refusal_REFUSAL_RATE_LIMITED)
+		return
 	}
+	defer sv.lim.release()
+	until := time.Now().Add(sv.cfg.MaxDuration)
 	u, err := sv.st.Begin()
 	if err != nil {
 		sv.refuse(s, pb.Refusal_REFUSAL_FULL)
@@ -123,7 +142,7 @@ func (sv *server) upload(s network.Stream) {
 		return
 	}
 	for {
-		if err := sv.next(s, r, &f); err != nil {
+		if err := sv.next(s, r, &f, until); err != nil {
 			u.Abort()
 			s.Reset()
 			return
@@ -131,7 +150,7 @@ func (sv *server) upload(s network.Stream) {
 		if f.GetEnd() != nil {
 			break
 		}
-		if _, err := u.Write(f.GetChunk()); err != nil {
+		if _, err := writeChunk(u, f.GetChunk()); err != nil {
 			u.Abort()
 			if errors.Is(err, ErrTooLarge) {
 				sv.refuse(s, pb.Refusal_REFUSAL_TOO_LARGE)
@@ -141,7 +160,7 @@ func (sv *server) upload(s network.Stream) {
 			return
 		}
 	}
-	info := &pb.ReportInfo{PeerId: s.Conn().RemotePeer().String(), Details: start.Details}
+	info := &pb.ReportInfo{PeerId: s.Conn().RemotePeer().String(), Details: capDetails(start.Details)}
 	code, err := u.Commit(info, time.Now())
 	if err != nil {
 		sv.refuse(s, pb.Refusal_REFUSAL_FULL)
@@ -179,8 +198,14 @@ func (sv *server) read(s network.Stream) {
 			done(err)
 			return
 		}
-		_ = wire.WriteFrame(s, &pb.ReadFrame{Body: &pb.ReadFrame_List{List: &pb.ReportList{Reports: rs}}})
-		_ = s.Close()
+		// One frame per report: all of them would not fit in one.
+		for _, r := range rs {
+			if err := wire.WriteFrame(s, &pb.ReadFrame{Body: &pb.ReadFrame_Info{Info: r}}); err != nil {
+				s.Reset()
+				return
+			}
+		}
+		done(nil)
 	case *pb.ReadRequest_Get:
 		sv.get(s, op.Get, done)
 	case *pb.ReadRequest_Delete:
@@ -223,5 +248,37 @@ func (sv *server) get(s network.Stream, code string, done func(error)) {
 			done(err)
 			return
 		}
+	}
+}
+
+// writeChunk stores part of an upload; tests replace it to fail as a full
+// disk would.
+var writeChunk = (*Upload).Write
+
+// ipKey is the key the per-IP limit counts ip under: an IPv4 address, or
+// an IPv6 address's /64, which a home or a phone usually has whole.
+func ipKey(ip net.IP) string {
+	if ip.To4() != nil {
+		return ip.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+// capDetails returns d with its fields cut to maxDetail characters (the
+// note to maxNote), so a report's details stay small on disk.
+func capDetails(d *pb.LogDetails) *pb.LogDetails {
+	cut := func(s string, n int) string {
+		if r := []rune(s); len(r) > n {
+			return string(r[:n])
+		}
+		return s
+	}
+	return &pb.LogDetails{
+		Name:         cut(d.GetName(), maxDetail),
+		App:          cut(d.GetApp(), maxDetail),
+		Version:      cut(d.GetVersion(), maxDetail),
+		Platform:     cut(d.GetPlatform(), maxDetail),
+		DeviceTimeMs: d.GetDeviceTimeMs(),
+		Note:         cut(d.GetNote(), maxNote),
 	}
 }

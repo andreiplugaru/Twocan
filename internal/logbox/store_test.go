@@ -91,11 +91,12 @@ func TestTooLargeUpload(t *testing.T) {
 }
 
 func TestEvictsOldestWhenFull(t *testing.T) {
-	s, _ := newTestStore(t, Limits{MaxUpload: 10, MaxTotal: 10, MaxAge: time.Hour})
+	// Each report takes its 300 bytes plus about 100 of details: room for two.
+	s, _ := newTestStore(t, Limits{MaxUpload: 1000, MaxTotal: 1000, MaxAge: time.Hour})
 	now := time.Now()
-	put(t, s, "aaaa", now, nil)
-	b := put(t, s, "bbbb", now.Add(time.Second), nil)
-	c := put(t, s, "cccc", now.Add(2*time.Second), nil)
+	put(t, s, strings.Repeat("a", 300), now, nil)
+	b := put(t, s, strings.Repeat("b", 300), now.Add(time.Second), nil)
+	c := put(t, s, strings.Repeat("c", 300), now.Add(2*time.Second), nil)
 	rs, err := s.List()
 	require.NoError(t, err)
 	require.Len(t, rs, 2)

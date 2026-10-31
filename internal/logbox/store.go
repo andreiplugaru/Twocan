@@ -127,27 +127,30 @@ func (u *Upload) Commit(info *pb.ReportInfo, now time.Time) (string, error) {
 	s := u.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if u.n > s.lim.MaxTotal {
-		os.Remove(u.f.Name())
-		return "", ErrFull
-	}
-	if err := s.makeRoomLocked(u.n); err != nil {
-		os.Remove(u.f.Name())
-		return "", err
-	}
 	info.Code = newCode()
 	info.ReceivedMs = now.UnixMilli()
 	info.Size = uint64(u.n)
+	js, err := protojson.Marshal(info)
+	if err != nil {
+		os.Remove(u.f.Name())
+		return "", err
+	}
+	// Both files count towards MaxTotal.
+	size := u.n + int64(len(js))
+	if size > s.lim.MaxTotal {
+		os.Remove(u.f.Name())
+		return "", ErrFull
+	}
+	if err := s.makeRoomLocked(size); err != nil {
+		os.Remove(u.f.Name())
+		return "", err
+	}
 	stem := filepath.Join(s.dir, now.UTC().Format("20060102T150405Z")+"-"+info.Code)
 	if err := os.Rename(u.f.Name(), stem+".log.gz"); err != nil {
 		os.Remove(u.f.Name())
 		return "", err
 	}
-	js, err := protojson.Marshal(info)
-	if err == nil {
-		err = os.WriteFile(stem+".json", js, 0o600)
-	}
-	if err != nil {
+	if err := os.WriteFile(stem+".json", js, 0o600); err != nil {
 		os.Remove(stem + ".log.gz")
 		os.Remove(stem + ".json")
 		return "", err
@@ -163,22 +166,24 @@ func (s *Store) makeRoomLocked(size int64) error {
 	}
 	var total int64
 	for _, r := range rs {
-		total += int64(r.info.Size)
+		total += r.disk
 	}
 	for _, r := range rs {
 		if total+size <= s.lim.MaxTotal {
 			break
 		}
 		s.removeLocked(r.stem)
-		total -= int64(r.info.Size)
+		total -= r.disk
 	}
 	return nil
 }
 
-// stored is a report on disk: its path without extension, and its details.
+// stored is a report on disk: its path without extension, its details and
+// the bytes its two files take.
 type stored struct {
 	stem string
 	info *pb.ReportInfo
+	disk int64
 }
 
 // listLocked returns the reports, oldest first; unreadable ones are skipped.
@@ -201,7 +206,12 @@ func (s *Store) listLocked() ([]stored, error) {
 		if protojson.Unmarshal(b, &info) != nil || !validCode(info.Code) {
 			continue
 		}
-		out = append(out, stored{filepath.Join(s.dir, strings.TrimSuffix(name, ".json")), &info})
+		stem := filepath.Join(s.dir, strings.TrimSuffix(name, ".json"))
+		disk := int64(len(b))
+		if fi, err := os.Stat(stem + ".log.gz"); err == nil {
+			disk += fi.Size()
+		}
+		out = append(out, stored{stem, &info, disk})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].info.ReceivedMs != out[j].info.ReceivedMs {

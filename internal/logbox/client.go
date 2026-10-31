@@ -81,23 +81,46 @@ func Send(ctx context.Context, h host.Host, helper peer.ID, d *pb.LogDetails, gz
 	if _, err := reply(); err != nil {
 		return "", err
 	}
+	// The helper may refuse partway through (its disk filled up) and stop
+	// reading: watch for its reply while sending, and stop writing then.
+	type result struct {
+		rep *pb.UploadReply
+		err error
+	}
+	got := make(chan result, 1)
+	go func() {
+		rep, err := reply()
+		if err != nil {
+			_ = s.SetWriteDeadline(time.Now()) // unblock a stuck write
+		}
+		got <- result{rep, err}
+	}()
+	writeErr := func(err error) (string, error) {
+		select {
+		case res := <-got:
+			if res.err != nil {
+				return "", res.err
+			}
+		case <-time.After(time.Second):
+		}
+		s.Reset()
+		return "", err
+	}
 	for len(gz) > 0 {
 		n := min(len(gz), chunkSize)
 		if err := wire.WriteFrame(s, &pb.UploadFrame{Body: &pb.UploadFrame_Chunk{Chunk: gz[:n]}}); err != nil {
-			s.Reset()
-			return "", err
+			return writeErr(err)
 		}
 		gz = gz[n:]
 	}
 	if err := wire.WriteFrame(s, &pb.UploadFrame{Body: &pb.UploadFrame_End{End: &pb.UploadEnd{}}}); err != nil {
-		s.Reset()
-		return "", err
+		return writeErr(err)
 	}
-	rep, err := reply()
-	if err != nil {
-		return "", err
+	res := <-got
+	if res.err != nil {
+		return "", res.err
 	}
-	return rep.Code, nil
+	return res.rep.Code, nil
 }
 
 // request sends one ReadRequest and returns a reader of the answer.
@@ -128,14 +151,22 @@ func List(ctx context.Context, h host.Host, helper peer.ID) ([]*pb.ReportInfo, e
 		return nil, err
 	}
 	defer s.Close()
-	var f pb.ReadFrame
-	if err := wire.ReadFrame(r, &f); err != nil {
-		return nil, err
+	var out []*pb.ReportInfo
+	for {
+		var f pb.ReadFrame
+		if err := wire.ReadFrame(r, &f); err != nil {
+			return nil, err
+		}
+		if d := f.GetDone(); d != nil {
+			if err := doneErr(d); err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+		if info := f.GetInfo(); info != nil {
+			out = append(out, info)
+		}
 	}
-	if d := f.GetDone(); d != nil {
-		return nil, doneErr(d)
-	}
-	return f.GetList().GetReports(), nil
 }
 
 // Get writes report code's log (gzipped, as sent) to w and returns its details.
