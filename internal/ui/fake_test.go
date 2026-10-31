@@ -23,11 +23,14 @@ type fakeAPI struct {
 	history  map[peer.ID][]store.Message
 	reach    network.Reachability
 	sendErr  error
-	details  core.ContactDetails
-	check    p2p.CheckResult
-	checkErr error
-	addErr   error // returned by AddContact and AddContactFromImage
-	nextID   uint32
+	// SendLog returns sendLogCode and sendLogErr, recording the note.
+	sendLogCode, sentNote string
+	sendLogErr            error
+	details               core.ContactDetails
+	check                 p2p.CheckResult
+	checkErr              error
+	addErr                error // returned by AddContact and AddContactFromImage
+	nextID                uint32
 
 	AcceptCalls   []peer.ID
 	RejectCalls   []peer.ID
@@ -256,4 +259,8 @@ func (f *fakeAPI) CheckConnection(_ context.Context, _ peer.ID, report func(int,
 	return f.check, f.checkErr
 }
 func (f *fakeAPI) NetworkChanged() {}
-func (f *fakeAPI) Stop() error     { return nil }
+func (f *fakeAPI) SendLog(_ context.Context, note string) (string, error) {
+	f.sentNote = note
+	return f.sendLogCode, f.sendLogErr
+}
+func (f *fakeAPI) Stop() error { return nil }

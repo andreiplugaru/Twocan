@@ -47,6 +47,7 @@ const helpText = `commands:
   /react <who> <id> <emoji>   react to a message ("-" removes your reaction)
   /search <words>             find messages in every conversation
   /stats <who>                in/out/pending message counts
+  /sendlog [note]             send your log to the helper, for troubleshooting
   /info <who>                 connection details: how you're connected, last problem, saved addresses
   /check <who>                check step by step whether and how they can be reached
   /status                     your peer ID and reachability
@@ -174,6 +175,13 @@ func (c *client) handle(line string) (quit bool) {
 		c.cmdContacts()
 	case "/msg":
 		c.cmdMsg(rest)
+	case "/sendlog":
+		code, err := c.api.SendLog(c.ctx, rest)
+		if err != nil {
+			c.say("could not send the log: %v", err)
+		} else {
+			c.say("log sent: %s", code)
+		}
 	case "/history":
 		c.cmdHistory(rest)
 	case "/reply":
