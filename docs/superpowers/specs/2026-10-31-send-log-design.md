@@ -63,7 +63,7 @@ All configurable by flag, with these defaults:
 |---|---|
 | Size of one upload | 8 MiB |
 | Total storage | 256 MiB; the oldest reports are deleted to make room |
-| Kept for | 14 days, checked hourly and at startup |
+| Kept for | 7 days, checked hourly and at startup |
 | Uploads at the same time | 2 |
 | Per sender IP address | 6 an hour |
 | Per peer ID | 3 an hour |
@@ -71,6 +71,17 @@ All configurable by flag, with these defaults:
 | Memory | Streams are read with deadlines and chunks are written straight to a temporary file; the upload never sits in memory. |
 
 The per-IP and per-peer counters live in memory only.
+
+### Deletion
+
+A report is deleted:
+- **7 days after it arrived:** the helper checks at startup and every hour;
+- **when storage is full:** the oldest reports go first, to make room for a new upload;
+- **on request:** `twocan-logs delete <code>`, or `rm` over SSH.
+
+An upload that fails halfway leaves no file: its temporary file is deleted immediately, and any left over from a crash are removed at startup.
+
+The hourly cleanup runs whenever `$STATE/logs/` exists, even with `--log-readers` removed or the off switch on. So turning the feature off leaves no reports behind for more than 7 days.
 
 ### The off switch
 
@@ -115,7 +126,7 @@ It finds the helper through `--helper` or `TWOCAN_BOOTSTRAP`, or falls back to t
 ## Security notes
 
 - In transit, uploads use libp2p's encryption to the helper whose peer ID is pinned in the device's settings.
-- At rest, reports are stored readable, in a directory only the helper's service and root can open, for at most 14 days. Whoever controls the VPS can read them: they hold contact names, peer IDs and IP addresses, never messages or keys.
+- At rest, reports are stored readable, in a directory only the helper's service and root can open, for at most 7 days. Whoever controls the VPS can read them: they hold contact names, peer IDs and IP addresses, never messages or keys.
 - Reading over the network is limited to authenticated peer IDs, and nothing secret is built into the apps.
 - Junk uploads are contained by the per-IP limits, the size cap, the storage cap and the concurrency limit. Someone with many IP addresses can still crowd out real logs, but can't affect chat or the relay.
 - The reader treats every report as untrusted data: names in a report never become file paths, and decompression is capped.
