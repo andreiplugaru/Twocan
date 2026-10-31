@@ -97,6 +97,7 @@ jobs:
             CGO_ENABLED=0 GOARCH=$arch go build -trimpath -ldflags "$ldflags" -o "dist/twocan-cli-linux-$arch" ./cmd/twocan-cli
             CGO_ENABLED=0 GOARCH=$arch go build -trimpath -ldflags "$ldflags" -o "dist/twocan-helper-linux-$arch" ./cmd/twocan-helper
           done
+          CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/twocan-logs-linux-amd64 ./cmd/twocan-logs
           cp deploy/twocan-helper.service dist/
           cd dist && sha256sum * > SHA256SUMS
 

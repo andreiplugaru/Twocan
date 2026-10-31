@@ -12,7 +12,8 @@ Twocan v1 is a learning project: one-to-one text chat only. The notes in [`docs/
 | --- | --- |
 | `twocan` | The desktop app: contacts on the left, conversation on the right |
 | `twocan-cli` | The same thing in a terminal, handy for testing and scripting |
-| `twocan-helper` | The helper server: peer discovery (private DHT), relay, reachability checks |
+| `twocan-helper` | The helper server: peer discovery (private DHT), relay, reachability checks, and optionally an inbox for logs |
+| `twocan-logs` | Reads the logs devices sent to the helper (see [Receiving logs on the helper](#receiving-logs-on-the-helper)) |
 | Android app | The same chat on your phone, in [`android/`](android/) (see [Android app](#android-app)) |
 
 ## Download
@@ -24,6 +25,7 @@ Grab the binaries from the [latest release](https://github.com/andreiplugaru/Two
 | `twocan-linux-amd64` | Desktop app (x86-64). Needs the usual desktop OpenGL, X11, Wayland and xkbcommon libraries, which are already installed on any Linux desktop |
 | `twocan-cli-linux-amd64`, `twocan-cli-linux-arm64` | Terminal client (static, no dependencies) |
 | `twocan-helper-linux-amd64`, `twocan-helper-linux-arm64` | Helper server (static), plus `twocan-helper.service` |
+| `twocan-logs-linux-amd64` | Log reader (static) |
 | `twocan-android.apk` | Android app (Android 8 and up): open it on the phone and allow installing apps from that source |
 | `SHA256SUMS` | Checksums: `sha256sum -c SHA256SUMS --ignore-missing` |
 
@@ -102,6 +104,8 @@ Select the contact and click **Details** above the conversation (or run `/info <
 
 It ends with a one-line verdict. The direct dial lists every address it tried and why each failed. **Copy results** puts the whole report on the clipboard, ready to paste into a bug report. Successful dials stay connected. "Last seen" and "last problem" cover the current session only.
 
+**Sending your log.** Click **Send log** (desktop), use **Settings → Send log** (Android) or run `/sendlog [note]` (`twocan-cli`). Twocan sends the end of its log, with your note, to your helper and shows a code such as `K7F3-9QX2`: pass the code on to whoever looks into the problem. The log holds contact names and network addresses, never your messages. It only works if the helper receives logs (see [Receiving logs on the helper](#receiving-logs-on-the-helper)); otherwise Twocan says why, and on Android offers **Share log** instead.
+
 **Why you might be on the relay, and how Twocan gets off it.** Twocan keeps the same ports from one start to the next, so the addresses your contacts saved keep working. When two contacts connect, even through the relay, each sends the other all its addresses: the local network ones that libp2p and the helper never pass on, and the public ones (IPv6, a port your router forwards, the address the helper sees) that libp2p stops advertising once you have a relay address. While a contact is connected only through the relay, Twocan tries those addresses right away, then after 1 minute, 2, 4 and so on up to every 30 minutes, and switches to a direct connection as soon as one works. On mobile data a direct connection needs one side to accept incoming connections (often IPv6, or a forwarded port) or a successful hole punch; otherwise the relay is the expected path. If you stay on the relay, the direct dial in **Check connection** shows which addresses fail and why: "no answer" usually means a firewall, or a Wi-Fi network that keeps devices apart.
 
 ## Command-line client
@@ -161,7 +165,7 @@ The build first turns the Go code into an Android library with gomobile ([`andro
 
 Install updates over the old app (`adb install -r`) and always build on the same computer: Android only accepts an update signed with the same key, and the debug key is per computer. **Uninstalling deletes your identity and history**, and contacts would have to add you again. The app is excluded from Android's cloud backups on purpose, since they would copy your private key off the phone.
 
-To share the log for troubleshooting, use **Settings → Share log**.
+To send the log for troubleshooting, use **Settings → Send log** (see [Sending your log](#when-a-contact-wont-connect)), or **Share log** to pick an app yourself.
 
 ## Flags
 
@@ -181,7 +185,7 @@ Everything lives in the data directory, which is created with mode 0700:
 
 - `identity.key` is your private key, and your peer ID comes from it. If you lose it, you lose your identity, and contacts will have to add you again. If someone copies it, they can impersonate you.
 - `twocan.db` holds your contacts and message history. It is **not encrypted** in v1, so use full-disk encryption if that matters to you.
-- `twocan.log` is the log (rotated at 5 MB, the last 3 kept). It records connection attempts and why they failed, discoveries, contact requests and deliveries, with peer IDs and IP addresses but **never message text or keys**. When something misbehaves, run with `--log-level debug` and look here.
+- `twocan.log` is the log (rotated at 5 MB, the last 3 kept). It records connection attempts and why they failed, discoveries, contact requests and deliveries, with peer IDs and IP addresses but **never message text or keys**. When something misbehaves, run with `--log-level debug` and look here, or send it with **Send log**.
 
 Each install is its own identity. History does not sync between devices.
 
@@ -262,6 +266,28 @@ While the repository is private, the script needs a fine-grained GitHub token wi
 - variable `VPS_HOST`: the VPS address.
 
 Test with `ssh -i twocan-deploy deploy@<vps> v0.1.0`, using a tag that has a release.
+
+### Receiving logs on the helper
+
+The helper can keep the logs that devices send with **Send log**, for you to read with `twocan-logs`. It is off until you turn it on.
+
+**Once, on your computer:** run `twocan-logs init`. It creates the reader key in `~/.config/twocan-logs/reader.key` (keep it like an SSH key) and prints its peer ID.
+
+**Once, on the VPS:** let that peer ID read logs. `sudo systemctl edit twocan-helper` opens a drop-in file, which updates leave alone; put this in it:
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/twocan-helper --key /var/lib/twocan-helper/helper.key --log-readers <reader peer ID>
+```
+The empty `ExecStart=` clears the original command. Several readers are separated by commas.
+
+**Reading:** `twocan-logs list` lists the reports; `twocan-logs get <code>` (or `get latest -n 2`) writes each one as `<code>-<name>.log` plus `<code>.txt` with the device, the note and how far its clock was from the helper's; `twocan-logs delete <code>` deletes one. It finds the helper through `--helper` or `TWOCAN_BOOTSTRAP`.
+
+**Turning it off:** `twocan-logs off` (and `on`) takes effect at once, as does `sudo touch /var/lib/twocan-helper/logs/OFF` (`sudo rm` to undo). Devices are then told the helper isn't accepting logs. Removing `--log-readers` turns the feature off entirely.
+
+**Limits and deletion:** a report is at most 8 MiB and all of them 256 MiB, the oldest going first when full; each is deleted after 7 days, even with the feature off (`--log-max-upload`, `--log-max-total` and `--log-max-age` change these). Each IP address may send 6 an hour and each device 3, two at a time.
+
+**What a report holds:** the end of the device's log (contact names, peer IDs, IP addresses; never messages or keys), its name, app, version and clock, and your note. Reports are stored as sent, in `/var/lib/twocan-helper/logs/`, readable only by the helper's service and root: whoever controls the VPS can read them.
 
 Design: [`docs/superpowers/specs/2026-10-23-twocan-design.md`](docs/superpowers/specs/2026-10-23-twocan-design.md). Plan: [`docs/superpowers/plans/2026-10-23-twocan-v1.md`](docs/superpowers/plans/2026-10-23-twocan-v1.md).
 
