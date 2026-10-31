@@ -28,6 +28,9 @@ type MainView struct {
 	// Dialogs opened by the "My card", "Add contact" and "Send log" buttons and, from
 	// Run, on first start (dialogs.go). A nil func does nothing.
 	showMyCard, showAddContact, showFirstRun, showSendLog func()
+	// async runs slow API calls (Send log) off the UI goroutine and onUI
+	// brings their outcome back; tests replace them.
+	async, onUI func(func())
 	// showDetails opens the connection details of a contact (details.go).
 	showDetails func(id peer.ID, name string)
 
@@ -75,7 +78,8 @@ func NewMainView(api core.API, w fyne.Window) *MainView {
 	v := &MainView{api: api, win: w, ctx: context.Background(), reach: api.Reachability()}
 	v.showMyCard = func() { showMyCard(api, w) }
 	v.showAddContact = func() { showAddContact(api, w) }
-	v.showSendLog = func() { showSendLog(api, w) }
+	v.async, v.onUI = func(f func()) { go f() }, fyne.Do
+	v.showSendLog = func() { showSendLog(api, w, v.async, v.onUI) }
 	v.showFirstRun = func() { showFirstRun(api, w, v.refreshName) }
 	v.showDetails = func(id peer.ID, name string) { showDetails(api, w, id, name) }
 	v.buildContacts()
