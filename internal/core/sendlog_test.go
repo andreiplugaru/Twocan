@@ -76,3 +76,36 @@ func TestSendLogWithoutHelper(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoHelper)
 	require.Less(t, time.Since(start), time.Second)
 }
+
+// startSendNode starts a node whose helper is boot.
+func startSendNode(t *testing.T, boot string) *Node {
+	t.Helper()
+	n, err := Start(t.Context(), Options{DataDir: t.TempDir(), Bootstrap: []string{boot}, ListenAddrs: []string{"/ip4/127.0.0.1/tcp/0"}})
+	require.NoError(t, err)
+	t.Cleanup(func() { n.Stop() })
+	return n
+}
+
+// A helper that does not receive logs (the default) gets plain words, not
+// libp2p's protocol negotiation error.
+func TestSendLogToHelperNotReceiving(t *testing.T) {
+	key, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	h, d, err := helper.Start(t.Context(), key, []string{"/ip4/127.0.0.1/tcp/0"})
+	require.NoError(t, err)
+	t.Cleanup(func() { d.Close(); h.Close() })
+	n := startSendNode(t, h.Addrs()[0].String()+"/p2p/"+h.ID().String())
+	_, err = n.SendLog(t.Context(), "")
+	require.EqualError(t, err, "the helper isn't accepting logs")
+}
+
+// An unreachable helper gets plain words too, without addresses.
+func TestSendLogHelperUnreachable(t *testing.T) {
+	key, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	id, err := peer.IDFromPrivateKey(key)
+	require.NoError(t, err)
+	n := startSendNode(t, "/ip4/127.0.0.1/tcp/1/p2p/"+id.String())
+	_, err = n.SendLog(t.Context(), "")
+	require.EqualError(t, err, "could not reach the helper")
+}

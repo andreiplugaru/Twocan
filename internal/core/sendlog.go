@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	msmux "github.com/multiformats/go-multistream"
 
 	"twocan/internal/logbox"
 	"twocan/internal/logging"
@@ -25,8 +27,14 @@ const (
 	helperConnectTimeout = 10 * time.Second
 )
 
-// ErrNoHelper is returned by SendLog when no helper is configured.
-var ErrNoHelper = errors.New("no helper is configured")
+// SendLog's errors besides the helper's refusals (*logbox.RefusedError),
+// in words for the user; the details go to the log.
+var (
+	ErrNoHelper           = errors.New("no helper is configured")
+	ErrHelperUnreachable  = errors.New("could not reach the helper")
+	ErrHelperNotReceiving = errors.New("the helper isn't accepting logs")
+	ErrSendInterrupted    = errors.New("the connection to the helper broke while sending the log; try again")
+)
 
 // SendLog sends the end of this node's log, with note, to the first helper
 // that accepts it, and returns the report's code. The log holds contact
@@ -65,17 +73,29 @@ func (n *Node) SendLog(ctx context.Context, note string) (string, error) {
 	var lastErr error
 	for _, h := range helpers {
 		cctx, cancel := context.WithTimeout(ctx, helperConnectTimeout)
-		err := n.h.Connect(cctx, h)
+		err := n.pn.ConnectHelper(cctx, h)
 		cancel()
+		if err != nil {
+			n.log.Info("could not reach a helper to send the log", "helper", h.ID, "err", err)
+			lastErr = ErrHelperUnreachable
+			continue
+		}
+		code, err := logbox.Send(ctx, n.h, h.ID, d, gz.Bytes())
 		if err == nil {
-			var code string
-			if code, err = logbox.Send(ctx, n.h, h.ID, d, gz.Bytes()); err == nil {
-				n.log.Info("log sent to the helper", "code", code, "bytes", gz.Len())
-				return code, nil
-			}
+			n.log.Info("log sent to the helper", "code", code, "bytes", gz.Len())
+			return code, nil
 		}
 		n.log.Info("could not send the log to a helper", "helper", h.ID, "err", err)
-		lastErr = err
+		var refused *logbox.RefusedError
+		var unsupported msmux.ErrNotSupported[protocol.ID]
+		switch {
+		case errors.As(err, &refused):
+			lastErr = err
+		case errors.As(err, &unsupported):
+			lastErr = ErrHelperNotReceiving
+		default:
+			lastErr = ErrSendInterrupted
+		}
 	}
 	return "", lastErr
 }

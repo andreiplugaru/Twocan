@@ -127,6 +127,13 @@ func (n *Node) probeOlder(ctx context.Context, conn network.Conn) {
 	}
 }
 
+// ConnectHelper connects to helper h, forgetting earlier failed dials to it
+// (a helper that is back must not wait out the dial backoff).
+func (n *Node) ConnectHelper(ctx context.Context, h peer.AddrInfo) error {
+	n.clearBackoff(h.ID)
+	return n.connect(ctx, h)
+}
+
 // ReconnectHelpers connects to every helper we are not connected to, at
 // once, forgetting earlier failed dials: after a network change the relay
 // and the DHT need the helper.
