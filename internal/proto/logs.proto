@@ -1,0 +1,85 @@
+syntax = "proto3";
+package twocan;
+option go_package = "twocan/internal/proto;pb";
+
+// LogDetails describes a log report; the device fills it in.
+message LogDetails {
+  string name = 1;
+  string app = 2;
+  string version = 3;
+  string platform = 4;
+  int64 device_time_ms = 5; // the device's clock when sending
+  string note = 6;
+}
+
+// UploadFrame is one frame of /twocan/logs/1.0.0, device to helper: start,
+// then chunks of the gzipped log, then end.
+message UploadFrame {
+  oneof body {
+    UploadStart start = 1;
+    bytes chunk = 2;
+    UploadEnd end = 3;
+  }
+}
+
+message UploadStart {
+  LogDetails details = 1;
+  uint64 size = 2; // bytes of gzipped log to follow
+}
+
+message UploadEnd {}
+
+enum Refusal {
+  REFUSAL_UNSPECIFIED = 0;
+  REFUSAL_OFF = 1;
+  REFUSAL_TOO_LARGE = 2;
+  REFUSAL_RATE_LIMITED = 3;
+  REFUSAL_FULL = 4;
+}
+
+// UploadReply is the helper's answer: a code, or why it refused.
+message UploadReply {
+  string code = 1;
+  Refusal refusal = 2;
+}
+
+// ReportInfo is a stored report's details, as the helper keeps them.
+message ReportInfo {
+  string code = 1;
+  int64 received_ms = 2;
+  uint64 size = 3;
+  string peer_id = 4; // the sender, as libp2p authenticated it
+  LogDetails details = 5;
+}
+
+// ReadRequest is the one request of a /twocan/logs-read/1.0.0 stream.
+message ReadRequest {
+  oneof op {
+    ListReports list = 1;
+    string get = 2;
+    string delete = 3;
+    bool set_off = 4;
+  }
+}
+
+message ListReports {}
+
+// ReadFrame is the helper's answer: a list, a report (info, chunks, done),
+// or done alone.
+message ReadFrame {
+  oneof body {
+    ReportList list = 1;
+    ReportInfo info = 2;
+    bytes chunk = 3;
+    Done done = 4;
+  }
+}
+
+message ReportList {
+  repeated ReportInfo reports = 1;
+}
+
+// Done ends a reply; error is empty on success.
+message Done {
+  string error = 1;
+}

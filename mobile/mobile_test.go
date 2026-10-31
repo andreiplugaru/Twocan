@@ -51,7 +51,7 @@ func startNode(t *testing.T, name string) (*Node, events) {
 	}
 	t.Cleanup(func() { testOptions = nil })
 	ev := make(events, 100)
-	n, err := Start(t.TempDir(), "", "", ev)
+	n, err := Start(t.TempDir(), "", "", "test", ev)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, n.Stop()) })
 	require.NoError(t, n.SetDisplayName(name))
@@ -255,4 +255,10 @@ func TestNetworkChangedChecksConnections(t *testing.T) {
 		b, err := os.ReadFile(ana.log.Path)
 		return err == nil && strings.Contains(string(b), `msg="network changed: checking connections"`)
 	}, 10*time.Second, 50*time.Millisecond)
+}
+
+func TestSendLogWithoutHelperIsFriendly(t *testing.T) {
+	ana, _ := startNode(t, "Ana") // startNode configures no helper
+	_, err := ana.SendLog("x")
+	require.EqualError(t, err, "no helper is configured")
 }

@@ -191,6 +191,9 @@ func newDHT(h host.Host, bootstrap []peer.AddrInfo) (*dht.IpfsDHT, error) {
 	)
 }
 
+// Helpers returns the helpers (bootstrap peers) the node was started with.
+func (n *Node) Helpers() []peer.AddrInfo { return n.boot }
+
 // Host returns the underlying libp2p host.
 func (n *Node) Host() host.Host { return n.host }
 

@@ -65,6 +65,10 @@ type Options struct {
 	// InterfaceIPs, if set, lists this machine's IPs where libp2p cannot
 	// (Android): see p2p.Config.InterfaceIPs.
 	InterfaceIPs func() ([]net.IP, error)
+	// App and Version describe this program in the log reports SendLog
+	// sends ("desktop", "cli", "android"; Version "" means the build's git
+	// revision).
+	App, Version string
 	// WatchNetwork makes the node notice network changes itself (Linux),
 	// as NetworkChanged does; the Android app calls that instead.
 	WatchNetwork bool
@@ -115,6 +119,7 @@ type API interface {
 	Ping(ctx context.Context, id peer.ID) (time.Duration, error)
 	CheckConnection(ctx context.Context, id peer.ID, report func(int, p2p.Step)) (p2p.CheckResult, error)
 	NetworkChanged()
+	SendLog(ctx context.Context, note string) (code string, err error)
 	Stop() error
 }
 
@@ -139,6 +144,8 @@ type Node struct {
 	// cancel func of its lifetime context.
 	pn         *p2p.Node
 	cancelNode context.CancelFunc
+	// For SendLog, also set by Start only.
+	dataDir, app, version string
 
 	iv        intervals
 	loops     *svc.Tracker
@@ -228,6 +235,10 @@ func Start(ctx context.Context, opts Options) (*Node, error) {
 		return nil, err
 	}
 	n.pn, n.cancelNode = pn, cancel
+	n.dataDir, n.app, n.version = opts.DataDir, opts.App, opts.Version
+	if n.version == "" {
+		n.version = buildVersion()
+	}
 	if opts.WatchNetwork {
 		n.loops.Go(func(ctx context.Context) {
 			if err := watchNetlink(ctx, n.NetworkChanged); err != nil {

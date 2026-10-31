@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -113,4 +114,36 @@ func (l *Log) Close() error {
 		l.closeErr = errors.Join(pipeErr, l.file.Close())
 	})
 	return l.closeErr
+}
+
+// Recent returns the end of the log in dataDir: the newest rotated file
+// followed by the current one, keeping the last max bytes. A missing file
+// counts as empty.
+func Recent(dataDir string, max int64) ([]byte, error) {
+	base := strings.TrimSuffix(FileName, filepath.Ext(FileName))
+	backups, err := filepath.Glob(filepath.Join(dataDir, base+"-*"+filepath.Ext(FileName)))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(backups) // lumberjack names them by time, so the last is newest
+	var files []string
+	if len(backups) > 0 {
+		files = append(files, backups[len(backups)-1])
+	}
+	files = append(files, filepath.Join(dataDir, FileName))
+	var out []byte
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b...)
+	}
+	if int64(len(out)) > max {
+		out = out[int64(len(out))-max:]
+	}
+	return out, nil
 }

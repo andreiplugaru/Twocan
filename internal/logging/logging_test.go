@@ -79,3 +79,22 @@ func TestCloseIsIdempotent(t *testing.T) {
 	require.NoError(t, l.Close())
 	require.NoError(t, l.Close())
 }
+
+func TestRecentTakesNewestBytes(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "twocan-2026-10-30T10-00-00.000.log"), []byte("older\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "twocan-2026-10-31T10-00-00.000.log"), []byte("old\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, FileName), []byte("new\n"), 0o600))
+	b, err := Recent(dir, 100)
+	require.NoError(t, err)
+	require.Equal(t, "old\nnew\n", string(b), "the newest rotated file, then the current one")
+	b, err = Recent(dir, 4)
+	require.NoError(t, err)
+	require.Equal(t, "new\n", string(b))
+}
+
+func TestRecentWithNoLogFile(t *testing.T) {
+	b, err := Recent(t.TempDir(), 100)
+	require.NoError(t, err)
+	require.Empty(t, b)
+}

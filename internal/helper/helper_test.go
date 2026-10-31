@@ -3,15 +3,20 @@ package helper
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/stretchr/testify/require"
 
 	"twocan/internal/identity"
+	"twocan/internal/logbox"
+	pb "twocan/internal/proto"
 )
 
 var loopback = []string{"/ip4/127.0.0.1/tcp/0"}
@@ -65,4 +70,55 @@ func TestHelperSpeaksTwocanDHT(t *testing.T) {
 		}
 		return false
 	}, 5*time.Second, 50*time.Millisecond)
+}
+
+func startTestHost(t *testing.T) host.Host {
+	t.Helper()
+	h, err := libp2p.New(libp2p.ListenAddrStrings(loopback...))
+	require.NoError(t, err)
+	t.Cleanup(func() { h.Close() })
+	return h
+}
+
+func hasProtocol(h host.Host, id protocol.ID) bool {
+	return slices.Contains(h.Mux().Protocols(), id)
+}
+
+// Without readers the helper offers no logs protocol, but still deletes
+// old reports, so turning the feature off leaves none behind.
+func TestStartLogsWithoutReadersOnlyPrunes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	st, err := logbox.OpenStore(dir, logbox.DefaultLimits())
+	require.NoError(t, err)
+	u, err := st.Begin()
+	require.NoError(t, err)
+	_, err = u.Commit(&pb.ReportInfo{}, time.Now().Add(-8*24*time.Hour))
+	require.NoError(t, err)
+
+	h := startTestHost(t)
+	stop, err := StartLogs(t.Context(), h, dir, nil, logbox.DefaultLimits(), nil)
+	require.NoError(t, err)
+	defer stop()
+	rs, err := st.List()
+	require.NoError(t, err)
+	require.Empty(t, rs, "the 8-day-old report was deleted")
+	require.False(t, hasProtocol(h, logbox.UploadProtocol))
+	require.False(t, hasProtocol(h, logbox.ReadProtocol))
+}
+
+func TestStartLogsWithReaders(t *testing.T) {
+	h := startTestHost(t)
+	stop, err := StartLogs(t.Context(), h, filepath.Join(t.TempDir(), "logs"), []peer.ID{h.ID()}, logbox.DefaultLimits(), nil)
+	require.NoError(t, err)
+	defer stop()
+	require.True(t, hasProtocol(h, logbox.UploadProtocol))
+	require.True(t, hasProtocol(h, logbox.ReadProtocol))
+}
+
+func TestStartLogsNothingWithoutDirOrReaders(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	stop, err := StartLogs(t.Context(), startTestHost(t), dir, nil, logbox.DefaultLimits(), nil)
+	require.NoError(t, err)
+	stop()
+	require.NoDirExists(t, dir)
 }

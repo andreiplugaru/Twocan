@@ -41,17 +41,19 @@ type sentMsg struct {
 }
 
 type fakeAPI struct {
-	mu       sync.Mutex
-	contacts []core.ContactView
-	sent     []sentMsg
-	addErr   error
-	images   []image.Image // AddContactFromImage calls
-	events   chan any
-	details  core.ContactDetails
-	check    p2p.CheckResult
-	pings    int
-	history  []store.Message
-	calls    []string // Reply, Edit, Delete, React and Search calls
+	mu          sync.Mutex
+	contacts    []core.ContactView
+	sent        []sentMsg
+	addErr      error
+	images      []image.Image // AddContactFromImage calls
+	events      chan any
+	details     core.ContactDetails
+	check       p2p.CheckResult
+	pings       int
+	history     []store.Message
+	calls       []string // Reply, Edit, Delete, React and Search calls
+	sendLogCode string   // what SendLog returns
+	sentNote    string   // the note SendLog got
 }
 
 func newFake(cs ...core.ContactView) *fakeAPI {
@@ -126,8 +128,14 @@ func (f *fakeAPI) record(format string, args ...any) {
 func (f *fakeAPI) MarkRead(context.Context, peer.ID) error { return nil }
 func (f *fakeAPI) Subscribe() (<-chan any, func())         { return f.events, func() {} }
 func (f *fakeAPI) Reachability() network.Reachability      { return network.ReachabilityUnknown }
-func (f *fakeAPI) NetworkChanged()                         {}
-func (f *fakeAPI) Stop() error                             { return nil }
+func (f *fakeAPI) SendLog(_ context.Context, note string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sentNote = note
+	return f.sendLogCode, nil
+}
+func (f *fakeAPI) NetworkChanged() {}
+func (f *fakeAPI) Stop() error     { return nil }
 func (f *fakeAPI) ContactDetails(context.Context, peer.ID) (core.ContactDetails, error) {
 	return f.details, nil
 }
@@ -341,4 +349,14 @@ func TestCLIShowsUpdatesAndTyping(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond, "output: %s", out.String())
 	_, _ = io.WriteString(w, "/quit\n")
 	require.NoError(t, <-done)
+}
+
+func TestSendLogCommand(t *testing.T) {
+	f := newFake()
+	f.sendLogCode = "K7F3-9QX2"
+	out := runScript(t, f, "/sendlog it broke")
+	require.Contains(t, out, "log sent: K7F3-9QX2")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.Equal(t, "it broke", f.sentNote)
 }

@@ -38,7 +38,7 @@ func run() int {
 		return 2
 	}
 
-	opts := core.Options{DataDir: *dataDir, EnableMDNS: true, WatchNetwork: true}
+	opts := core.Options{DataDir: *dataDir, EnableMDNS: true, WatchNetwork: true, App: "desktop"}
 	// An explicitly empty --bootstrap means none; unset means the default.
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "bootstrap" {

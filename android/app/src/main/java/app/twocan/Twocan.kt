@@ -63,6 +63,9 @@ class Twocan(context: Context) {
     /** Messages and delivery receipts, for the open conversation. */
     val events: SharedFlow<NodeEvent> = _events.asSharedFlow()
 
+    /** Send log, outliving the Settings screen (see [LogSender]). */
+    val logSender = LogSender(scope) { note -> call { it.sendLog(note) } }
+
     /** Helper addresses set in Settings; "" uses the ones built in. */
     var bootstrap: String
         get() = prefs.getString(KEY_BOOTSTRAP, "") ?: ""
@@ -125,7 +128,7 @@ class Twocan(context: Context) {
                 if (node != null) return@withLock
                 _state.value = State.Starting
                 try {
-                    val n = Mobile.start(dataDir.path, bootstrap, "info", listener)
+                    val n = Mobile.start(dataDir.path, bootstrap, "info", BuildConfig.VERSION_NAME, listener)
                     node = n
                     watchNetwork()
                     _displayName.value = n.displayName()

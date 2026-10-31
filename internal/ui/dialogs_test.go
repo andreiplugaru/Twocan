@@ -2,13 +2,16 @@ package ui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -228,4 +231,76 @@ func TestMyCardDialogShowsQRAndCopies(t *testing.T) {
 	test.Tap(findButton(t, d, "Copy"))
 	require.Equal(t, "twocan:fake", fyne.CurrentApp().Clipboard().Content())
 	findButton(t, d, "Save QR as PNG…")
+}
+
+// inlineSend makes v send logs on the calling goroutine, as tests need.
+func inlineSend(v *MainView) {
+	inline := func(f func()) { f() }
+	v.async, v.onUI = inline, inline
+}
+
+func TestSendLogDialogShowsCode(t *testing.T) {
+	f := standardFake()
+	f.sendLogCode = "K7F3-9QX2"
+	v := newTestView(t, f)
+	inlineSend(v)
+	d := openDialog(t, v, "Send log")
+	require.Contains(t, strings.Join(labelTexts(d), " "), "Never your messages")
+
+	findEntry(t, d).SetText("it broke")
+	test.Tap(findButton(t, d, "Send"))
+
+	require.Equal(t, "it broke", f.sentNote)
+	res := dialogOpen(v.win)
+	require.NotNil(t, res)
+	require.NotSame(t, d, res, "the result replaces the form")
+	require.Contains(t, labelTexts(res), "Log sent. Code: K7F3-9QX2")
+	test.Tap(findButton(t, res, "Copy"))
+	require.Equal(t, "K7F3-9QX2", fyne.CurrentApp().Clipboard().Content())
+}
+
+func TestSendLogDialogShowsWhyItFailed(t *testing.T) {
+	f := standardFake()
+	f.sendLogErr = errors.New("the helper isn't accepting logs")
+	v := newTestView(t, f)
+	inlineSend(v)
+	d := openDialog(t, v, "Send log")
+	test.Tap(findButton(t, d, "Send"))
+	require.Same(t, d, dialogOpen(v.win), "the form stays open")
+	require.Contains(t, strings.Join(labelTexts(d), " "), "the helper isn't accepting logs")
+	findButton(t, d, "Send") // ready to try again
+}
+
+// Sending runs off the UI goroutine: the window keeps working and shows
+// that the log is on its way.
+func TestSendLogDoesNotBlockTheUI(t *testing.T) {
+	f := standardFake()
+	f.sendLogCode = "K7F3-9QX2"
+	f.sendLogGate = make(chan struct{})
+	v := newTestView(t, f)
+	// The send runs in its own goroutine; its outcome comes back through ui,
+	// which this goroutine runs, as Fyne's main loop would.
+	ui := make(chan func(), 1)
+	v.async, v.onUI = func(f func()) { go f() }, func(f func()) { ui <- f }
+	d := openDialog(t, v, "Send log")
+
+	watchdog := time.AfterFunc(2*time.Second, func() {
+		t.Error("tapping Send blocked the UI while the log was sent")
+		close(f.sendLogGate)
+	})
+	test.Tap(findButton(t, d, "Send"))
+	require.True(t, watchdog.Stop(), "Tap returned while the log was still being sent")
+	sending := findButton(t, d, "Sending…")
+	require.True(t, sending.Disabled())
+
+	close(f.sendLogGate)
+	select {
+	case done := <-ui:
+		done()
+	case <-time.After(2 * time.Second):
+		t.Fatal("the send never finished")
+	}
+	top := dialogOpen(v.win)
+	require.NotSame(t, d, top)
+	require.True(t, slices.Contains(labelTexts(top), "Log sent. Code: K7F3-9QX2"))
 }

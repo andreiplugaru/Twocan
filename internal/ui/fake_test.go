@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"image"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -23,11 +24,16 @@ type fakeAPI struct {
 	history  map[peer.ID][]store.Message
 	reach    network.Reachability
 	sendErr  error
-	details  core.ContactDetails
-	check    p2p.CheckResult
-	checkErr error
-	addErr   error // returned by AddContact and AddContactFromImage
-	nextID   uint32
+	// SendLog returns sendLogCode and sendLogErr, recording the note.
+	sendLogCode, sentNote string
+	sendLogErr            error
+	sendLogGate           chan struct{} // if set, SendLog waits for it to close
+	mu                    sync.Mutex    // guards sentNote (SendLog runs off the UI goroutine)
+	details               core.ContactDetails
+	check                 p2p.CheckResult
+	checkErr              error
+	addErr                error // returned by AddContact and AddContactFromImage
+	nextID                uint32
 
 	AcceptCalls   []peer.ID
 	RejectCalls   []peer.ID
@@ -256,4 +262,13 @@ func (f *fakeAPI) CheckConnection(_ context.Context, _ peer.ID, report func(int,
 	return f.check, f.checkErr
 }
 func (f *fakeAPI) NetworkChanged() {}
-func (f *fakeAPI) Stop() error     { return nil }
+func (f *fakeAPI) SendLog(_ context.Context, note string) (string, error) {
+	if f.sendLogGate != nil {
+		<-f.sendLogGate
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sentNote = note
+	return f.sendLogCode, f.sendLogErr
+}
+func (f *fakeAPI) Stop() error { return nil }

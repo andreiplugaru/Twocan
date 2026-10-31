@@ -248,6 +248,83 @@ func showForm(w fyne.Window, title, prompt, action string, entry *widget.Entry,
 	w.Canvas().Focus(entry)
 }
 
+// sendLogNote says what Send log sends.
+const sendLogNote = "Sends your log to the helper, so the problem can be looked into. " +
+	"Your log, including contact names and network addresses. Never your messages."
+
+// showSendLog sends the log to the helper with an optional note, then shows
+// the report's code to pass on, with a Copy button. Sending can take a while,
+// so async runs it off the UI goroutine and onUI brings the outcome back.
+func showSendLog(api core.API, w fyne.Window, async, onUI func(func())) {
+	prompt := widget.NewLabel(sendLogNote)
+	prompt.Wrapping = fyne.TextWrapWord
+	note := widget.NewMultiLineEntry()
+	note.SetPlaceHolder("What went wrong? (optional)")
+	note.Wrapping = fyne.TextWrapWord
+	note.SetMinRowsVisible(3)
+	errText := widget.NewLabel("")
+	errText.Importance = widget.DangerImportance
+	errText.Wrapping = fyne.TextWrapWord
+	errText.Hide()
+	d := dialog.NewCustomWithoutButtons("Send log", container.NewVBox(prompt, note, errText), w)
+
+	var send, cancel *widget.Button
+	busy := func(b bool) {
+		if b {
+			send.SetText("Sending…")
+			send.Disable()
+			cancel.Disable()
+			note.Disable()
+			return
+		}
+		send.SetText("Send")
+		send.Enable()
+		cancel.Enable()
+		note.Enable()
+	}
+	send = widget.NewButton("Send", func() {
+		text := note.Text
+		if r := []rune(text); len(r) > 500 {
+			text = string(r[:500])
+		}
+		errText.Hide()
+		busy(true)
+		async(func() {
+			code, err := api.SendLog(context.Background(), text)
+			onUI(func() {
+				if err != nil {
+					busy(false)
+					errText.SetText(errtext.FriendlyError(err))
+					errText.Show()
+					d.Resize(fyne.NewSize(dialogWidth, 0)) // grow to fit errText
+					return
+				}
+				d.Hide()
+				showLogSent(w, code)
+			})
+		})
+	})
+	send.Importance = widget.HighImportance
+	cancel = widget.NewButton("Cancel", d.Hide)
+	d.SetButtons([]fyne.CanvasObject{cancel, send})
+	d.Resize(fyne.NewSize(dialogWidth, 0))
+	d.Show()
+	w.Canvas().Focus(note)
+}
+
+// showLogSent shows the code of a sent log, with a Copy button.
+func showLogSent(w fyne.Window, code string) {
+	copyCode := widget.NewButton("Copy", func() { fyne.CurrentApp().Clipboard().SetContent(code) })
+	content := container.NewVBox(
+		widget.NewLabel("Log sent. Code: "+code),
+		widget.NewLabel("Pass the code on to whoever looks into the problem."),
+		container.NewHBox(layout.NewSpacer(), copyCode),
+	)
+	d := dialog.NewCustom("Log sent", "Close", content, w)
+	d.Resize(fyne.NewSize(dialogWidth, 0))
+	d.Show()
+}
+
 // nonBlank trims a user-entered name and rejects a blank one. The core
 // enforces the length limit.
 func nonBlank(name string) (string, error) {

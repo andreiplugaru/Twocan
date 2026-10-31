@@ -42,7 +42,7 @@ func run() int {
 		return 2
 	}
 
-	opts := core.Options{DataDir: *dataDir, EnableMDNS: *mdns, WatchNetwork: true}
+	opts := core.Options{DataDir: *dataDir, EnableMDNS: *mdns, WatchNetwork: true, App: "cli"}
 	// An explicitly empty --bootstrap/--listen means none; unset means default.
 	flag.Visit(func(f *flag.Flag) {
 		switch f.Name {
