@@ -206,11 +206,21 @@ type formButton struct {
 // dialog and it stays open.
 func showForm(w fyne.Window, title, prompt, action string, entry *widget.Entry,
 	cancel bool, submit func(string) error, extras ...formButton) {
+	showFormThen(w, title, prompt, action, entry, cancel, submit, nil, extras...)
+}
+
+// showFormThen is showForm that runs then, if set, once the dialog has
+// closed after a successful submit (a dialog shown before would close with
+// it).
+func showFormThen(w fyne.Window, title, prompt, action string, entry *widget.Entry,
+	cancel bool, submit func(string) error, then func(), extras ...formButton) {
 	errText := widget.NewLabel("")
 	errText.Importance = widget.DangerImportance
 	errText.Wrapping = fyne.TextWrapWord // the install hint is long
 	errText.Hide()
-	content := container.NewVBox(widget.NewLabel(prompt), entry)
+	promptText := widget.NewLabel(prompt)
+	promptText.Wrapping = fyne.TextWrapWord // Send log's is long
+	content := container.NewVBox(promptText, entry)
 	d := dialog.NewCustomWithoutButtons(title, content, w)
 
 	done := func(err error) {
@@ -221,6 +231,9 @@ func showForm(w fyne.Window, title, prompt, action string, entry *widget.Entry,
 			return
 		}
 		d.Hide()
+		if then != nil {
+			then()
+		}
 	}
 	if len(extras) > 0 {
 		row := container.NewHBox()
@@ -246,6 +259,39 @@ func showForm(w fyne.Window, title, prompt, action string, entry *widget.Entry,
 	d.Resize(fyne.NewSize(dialogWidth, 0))
 	d.Show()
 	w.Canvas().Focus(entry)
+}
+
+// sendLogNote says what Send log sends.
+const sendLogNote = "Sends your log to the helper, so the problem can be looked into. " +
+	"Your log, including contact names and network addresses. Never your messages."
+
+// showSendLog sends the log to the helper with an optional note, then shows
+// the report's code to pass on, with a Copy button.
+func showSendLog(api core.API, w fyne.Window) {
+	note := widget.NewMultiLineEntry()
+	note.SetPlaceHolder("What went wrong? (optional)")
+	note.Wrapping = fyne.TextWrapWord
+	note.SetMinRowsVisible(3)
+	var code string
+	send := func(text string) error {
+		if r := []rune(text); len(r) > 500 {
+			text = string(r[:500])
+		}
+		var err error
+		code, err = api.SendLog(context.Background(), text)
+		return err
+	}
+	showFormThen(w, "Send log", sendLogNote, "Send", note, true, send, func() {
+		copyCode := widget.NewButton("Copy", func() { fyne.CurrentApp().Clipboard().SetContent(code) })
+		content := container.NewVBox(
+			widget.NewLabel("Log sent. Code: "+code),
+			widget.NewLabel("Pass the code on to whoever looks into the problem."),
+			container.NewHBox(layout.NewSpacer(), copyCode),
+		)
+		d := dialog.NewCustom("Log sent", "Close", content, w)
+		d.Resize(fyne.NewSize(dialogWidth, 0))
+		d.Show()
+	})
 }
 
 // nonBlank trims a user-entered name and rejects a blank one. The core

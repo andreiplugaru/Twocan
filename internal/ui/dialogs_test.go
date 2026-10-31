@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"os"
@@ -228,4 +229,33 @@ func TestMyCardDialogShowsQRAndCopies(t *testing.T) {
 	test.Tap(findButton(t, d, "Copy"))
 	require.Equal(t, "twocan:fake", fyne.CurrentApp().Clipboard().Content())
 	findButton(t, d, "Save QR as PNG…")
+}
+
+func TestSendLogDialogShowsCode(t *testing.T) {
+	f := standardFake()
+	f.sendLogCode = "K7F3-9QX2"
+	v := newTestView(t, f)
+	d := openDialog(t, v, "Send log")
+	require.Contains(t, strings.Join(labelTexts(d), " "), "Never your messages")
+
+	findEntry(t, d).SetText("it broke")
+	test.Tap(findButton(t, d, "Send"))
+
+	require.Equal(t, "it broke", f.sentNote)
+	res := dialogOpen(v.win)
+	require.NotNil(t, res)
+	require.NotSame(t, d, res, "the result replaces the form")
+	require.Contains(t, labelTexts(res), "Log sent. Code: K7F3-9QX2")
+	test.Tap(findButton(t, res, "Copy"))
+	require.Equal(t, "K7F3-9QX2", fyne.CurrentApp().Clipboard().Content())
+}
+
+func TestSendLogDialogShowsWhyItFailed(t *testing.T) {
+	f := standardFake()
+	f.sendLogErr = errors.New("the helper isn't accepting logs")
+	v := newTestView(t, f)
+	d := openDialog(t, v, "Send log")
+	test.Tap(findButton(t, d, "Send"))
+	require.Same(t, d, dialogOpen(v.win), "the form stays open")
+	require.Contains(t, strings.Join(labelTexts(d), " "), "the helper isn't accepting logs")
 }

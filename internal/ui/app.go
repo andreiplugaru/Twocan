@@ -25,9 +25,9 @@ type MainView struct {
 	win fyne.Window
 	ctx context.Context
 
-	// Dialogs opened by the "My card" and "Add contact" buttons and, from
+	// Dialogs opened by the "My card", "Add contact" and "Send log" buttons and, from
 	// Run, on first start (dialogs.go). A nil func does nothing.
-	showMyCard, showAddContact, showFirstRun func()
+	showMyCard, showAddContact, showFirstRun, showSendLog func()
 	// showDetails opens the connection details of a contact (details.go).
 	showDetails func(id peer.ID, name string)
 
@@ -75,6 +75,7 @@ func NewMainView(api core.API, w fyne.Window) *MainView {
 	v := &MainView{api: api, win: w, ctx: context.Background(), reach: api.Reachability()}
 	v.showMyCard = func() { showMyCard(api, w) }
 	v.showAddContact = func() { showAddContact(api, w) }
+	v.showSendLog = func() { showSendLog(api, w) }
 	v.showFirstRun = func() { showFirstRun(api, w, v.refreshName) }
 	v.showDetails = func(id peer.ID, name string) { showDetails(api, w, id, name) }
 	v.buildContacts()
@@ -91,8 +92,10 @@ func NewMainView(api core.API, w fyne.Window) *MainView {
 func (v *MainView) Content() fyne.CanvasObject {
 	myCard := widget.NewButton("My card", func() { call(v.showMyCard) })
 	addContact := widget.NewButton("Add contact", func() { call(v.showAddContact) })
+	sendLog := widget.NewButton("Send log", func() { call(v.showSendLog) })
+	sendLog.Importance = widget.LowImportance
 	header := container.NewBorder(nil, nil, nil, myCard, v.name)
-	left := container.NewBorder(container.NewVBox(header, v.search), addContact, nil, nil, v.contactList)
+	left := container.NewBorder(container.NewVBox(header, v.search), container.NewVBox(addContact, sendLog), nil, nil, v.contactList)
 
 	bar := container.NewBorder(container.NewVBox(v.sendErr, v.composeBar), nil, nil, v.send, v.entry)
 	top := container.NewBorder(nil, nil, nil, container.NewHBox(v.typing, v.detailsBtn), v.peerName)
