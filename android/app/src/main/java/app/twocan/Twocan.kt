@@ -63,6 +63,9 @@ class Twocan(context: Context) {
     /** Messages and delivery receipts, for the open conversation. */
     val events: SharedFlow<NodeEvent> = _events.asSharedFlow()
 
+    /** Send log, outliving the Settings screen (see [LogSender]). */
+    val logSender = LogSender(scope) { note -> call { it.sendLog(note) } }
+
     /** Helper addresses set in Settings; "" uses the ones built in. */
     var bootstrap: String
         get() = prefs.getString(KEY_BOOTSTRAP, "") ?: ""

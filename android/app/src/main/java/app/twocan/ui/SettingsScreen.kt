@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.twocan.BuildConfig
+import app.twocan.LogSender
 import app.twocan.Twocan
 import app.twocan.userMessage
 import java.io.File
@@ -144,77 +145,69 @@ private const val MAX_NOTE = 500
 
 /**
  * Sends the log to the helper with an optional note, then shows the report's
- * code to pass on, or why it failed with Share log as the way out.
+ * code to pass on, or why it failed with Share log as the way out. The send
+ * and its outcome live in [Twocan.logSender], so they survive the screen
+ * being recreated (turning the phone).
  */
 @Composable
 private fun SendLogDialog(twocan: Twocan, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val state by twocan.logSender.state.collectAsStateWithLifecycle()
     var note by rememberSaveable { mutableStateOf("") }
-    var sending by remember { mutableStateOf(false) }
-    var code by rememberSaveable { mutableStateOf<String?>(null) }
-    var error by rememberSaveable { mutableStateOf<String?>(null) }
+    val close = { twocan.logSender.reset(); onDismiss() }
 
-    val done = code
-    val failed = error
-    when {
-        done != null -> AlertDialog(
-            onDismissRequest = onDismiss,
+    when (val s = state) {
+        is LogSender.State.Sent -> AlertDialog(
+            onDismissRequest = close,
             title = { Text("Log sent") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SelectionContainer {
-                        Text("Code: $done", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleMedium)
+                        Text("Code: ${s.code}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleMedium)
                     }
                     Text("Pass the code on to whoever looks into the problem.")
                 }
             },
-            confirmButton = { TextButton(onClick = { context.copyText("Twocan log code", done) }) { Text("Copy") } },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+            confirmButton = { TextButton(onClick = { context.copyText("Twocan log code", s.code) }) { Text("Copy") } },
+            dismissButton = { TextButton(onClick = close) { Text("Close") } },
         )
-        failed != null -> AlertDialog(
-            onDismissRequest = onDismiss,
+        is LogSender.State.Failed -> AlertDialog(
+            onDismissRequest = close,
             title = { Text("Could not send the log") },
-            text = { Text(failed) },
+            text = { Text(s.message) },
             confirmButton = {
-                TextButton(onClick = { context.shareLog(twocan.dataDir); onDismiss() }) { Text("Share log instead") }
+                TextButton(onClick = { context.shareLog(twocan.dataDir); close() }) { Text("Share log instead") }
             },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+            dismissButton = { TextButton(onClick = close) { Text("Close") } },
         )
-        else -> AlertDialog(
-            onDismissRequest = { if (!sending) onDismiss() },
-            title = { Text("Send log") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Sends your log to the helper, so the problem can be looked into. " +
-                            "Your log, including contact names and network addresses. Never your messages.",
-                    )
-                    OutlinedTextField(
-                        value = note,
-                        onValueChange = { note = it.take(MAX_NOTE) },
-                        placeholder = { Text("What went wrong? (optional)") },
-                        minLines = 2,
-                        enabled = !sending,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = !sending,
-                    onClick = {
-                        sending = true
-                        scope.launch {
-                            runCatching { twocan.call { it.sendLog(note) } }
-                                .onSuccess { code = it }
-                                .onFailure { error = it.userMessage }
-                            sending = false
-                        }
-                    },
-                ) { Text(if (sending) "Sending…" else "Send") }
-            },
-            dismissButton = { TextButton(enabled = !sending, onClick = onDismiss) { Text("Cancel") } },
-        )
+        else -> {
+            val sending = s == LogSender.State.Sending
+            AlertDialog(
+                onDismissRequest = { if (!sending) close() },
+                title = { Text("Send log") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Sends your log to the helper, so the problem can be looked into. " +
+                                "Your log, including contact names and network addresses. Never your messages.",
+                        )
+                        OutlinedTextField(
+                            value = note,
+                            onValueChange = { note = it.take(MAX_NOTE) },
+                            placeholder = { Text("What went wrong? (optional)") },
+                            minLines = 2,
+                            enabled = !sending,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(enabled = !sending, onClick = { twocan.logSender.send(note) }) {
+                        Text(if (sending) "Sending…" else "Send")
+                    }
+                },
+                dismissButton = { TextButton(enabled = !sending, onClick = close) { Text("Cancel") } },
+            )
+        }
     }
 }
