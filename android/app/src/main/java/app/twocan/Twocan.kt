@@ -125,7 +125,7 @@ class Twocan(context: Context) {
                 if (node != null) return@withLock
                 _state.value = State.Starting
                 try {
-                    val n = Mobile.start(dataDir.path, bootstrap, "info", listener)
+                    val n = Mobile.start(dataDir.path, bootstrap, "info", BuildConfig.VERSION_NAME, listener)
                     node = n
                     watchNetwork()
                     _displayName.value = n.displayName()

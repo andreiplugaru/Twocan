@@ -66,9 +66,9 @@ var testOptions func(*core.Options)
 // Start starts the node whose identity, contacts and history live in
 // dataDir. bootstrap is a comma-separated list of helper addresses; ""
 // means the ones built in. logLevel is debug, info, warn or error (""
-// means info); the log is twocan.log in dataDir. l gets the node's events
-// until Stop.
-func Start(dataDir, bootstrap, logLevel string, l Listener) (*Node, error) {
+// means info); the log is twocan.log in dataDir. version is the app's, for
+// the log reports SendLog sends. l gets the node's events until Stop.
+func Start(dataDir, bootstrap, logLevel, version string, l Listener) (*Node, error) {
 	if logLevel == "" {
 		logLevel = "info"
 	}
@@ -87,6 +87,8 @@ func Start(dataDir, bootstrap, logLevel string, l Listener) (*Node, error) {
 		EnableMDNS:   false,
 		InterfaceIPs: interfaceIPs,
 		Log:          lg.Logger,
+		App:          "android",
+		Version:      version,
 	}
 	if bootstrap != "" {
 		opts.Bootstrap = splitList(bootstrap)
@@ -412,6 +414,14 @@ func (n *Node) Ping(peerID string) (int64, error) {
 // addresses changed: connections that stopped answering are closed and
 // contacts are reached again at once. It returns at once.
 func (n *Node) NetworkChanged() { n.api.NetworkChanged() }
+
+// SendLog sends the end of the log, with note, to the helper and returns
+// the report's code to pass on. It blocks while sending (call it off the
+// main thread).
+func (n *Node) SendLog(note string) (string, error) {
+	code, err := n.api.SendLog(context.Background(), note)
+	return code, friendly(err)
+}
 
 // Check is a running connection check.
 type Check struct{ cancel context.CancelFunc }

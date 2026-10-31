@@ -1,5 +1,6 @@
 package app.twocan.ui
 
+import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -18,6 +20,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,6 +57,7 @@ fun SettingsScreen(twocan: Twocan, onBack: () -> Unit) {
     var nameError by rememberSaveable { mutableStateOf<String?>(null) }
     var bootstrap by rememberSaveable { mutableStateOf(twocan.bootstrap) }
     var peerId by remember { mutableStateOf("") }
+    var sendingLog by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { peerId = runCatching { twocan.call { it.peerID() } }.getOrDefault("") }
 
     Scaffold(topBar = { BackBar("Settings", onBack) }) { padding ->
@@ -114,18 +118,103 @@ fun SettingsScreen(twocan: Twocan, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = {
-                    val log = File(twocan.dataDir, LOG_FILE)
-                    if (!log.exists()) return@OutlinedButton
-                    val uri = FileProvider.getUriForFile(context, FILES_AUTHORITY, log)
-                    val send = Intent(Intent.ACTION_SEND)
-                        .setType("text/plain")
-                        .putExtra(Intent.EXTRA_STREAM, uri)
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    context.startActivity(Intent.createChooser(send, "Share Twocan log"))
-                }) { Text("Share log") }
+                Button(onClick = { sendingLog = true }) { Text("Send log") }
+                OutlinedButton(onClick = { context.shareLog(twocan.dataDir) }) { Text("Share log") }
             }
             Text("Twocan ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall)
         }
+    }
+    if (sendingLog) SendLogDialog(twocan) { sendingLog = false }
+}
+
+/** Shares the log file through Android's share sheet. */
+private fun Context.shareLog(dataDir: File) {
+    val log = File(dataDir, LOG_FILE)
+    if (!log.exists()) return
+    val uri = FileProvider.getUriForFile(this, FILES_AUTHORITY, log)
+    val send = Intent(Intent.ACTION_SEND)
+        .setType("text/plain")
+        .putExtra(Intent.EXTRA_STREAM, uri)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    startActivity(Intent.createChooser(send, "Share Twocan log"))
+}
+
+/** The longest note Send log takes (as the Go core). */
+private const val MAX_NOTE = 500
+
+/**
+ * Sends the log to the helper with an optional note, then shows the report's
+ * code to pass on, or why it failed with Share log as the way out.
+ */
+@Composable
+private fun SendLogDialog(twocan: Twocan, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var note by rememberSaveable { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    var code by rememberSaveable { mutableStateOf<String?>(null) }
+    var error by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val done = code
+    val failed = error
+    when {
+        done != null -> AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Log sent") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SelectionContainer {
+                        Text("Code: $done", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleMedium)
+                    }
+                    Text("Pass the code on to whoever looks into the problem.")
+                }
+            },
+            confirmButton = { TextButton(onClick = { context.copyText("Twocan log code", done) }) { Text("Copy") } },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        )
+        failed != null -> AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Could not send the log") },
+            text = { Text(failed) },
+            confirmButton = {
+                TextButton(onClick = { context.shareLog(twocan.dataDir); onDismiss() }) { Text("Share log instead") }
+            },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        )
+        else -> AlertDialog(
+            onDismissRequest = { if (!sending) onDismiss() },
+            title = { Text("Send log") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Sends your log to the helper, so the problem can be looked into. " +
+                            "Your log, including contact names and network addresses. Never your messages.",
+                    )
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { note = it.take(MAX_NOTE) },
+                        placeholder = { Text("What went wrong? (optional)") },
+                        minLines = 2,
+                        enabled = !sending,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !sending,
+                    onClick = {
+                        sending = true
+                        scope.launch {
+                            runCatching { twocan.call { it.sendLog(note) } }
+                                .onSuccess { code = it }
+                                .onFailure { error = it.userMessage }
+                            sending = false
+                        }
+                    },
+                ) { Text(if (sending) "Sending…" else "Send") }
+            },
+            dismissButton = { TextButton(enabled = !sending, onClick = onDismiss) { Text("Cancel") } },
+        )
     }
 }
