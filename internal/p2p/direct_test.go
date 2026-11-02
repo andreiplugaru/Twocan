@@ -91,7 +91,7 @@ func (h addrsHost) AllAddrs() []ma.Multiaddr { return h.all }
 // Behind a NAT with a relay address, libp2p advertises no public address;
 // ShareableAddrs still offers them, with the interface IPs added.
 func TestShareableAddrsKeepPublicOnes(t *testing.T) {
-	circuit := ma.StringCast("/ip4/62.83.39.196/tcp/4001/p2p/12D3KooWBNakK5JNCJdwkRDkhC6tZ9hBJ7B4NKTfBvfTacJ37L2z/p2p-circuit")
+	circuit := ma.StringCast("/ip4/203.0.113.7/tcp/4001/p2p/12D3KooWK5VRzX6ZXVBUEFp7RdUxSVKY5JN7dNWJcjRzjw8wwJVH/p2p-circuit")
 	n := &Node{
 		host: addrsHost{
 			addrs: []ma.Multiaddr{ma.StringCast("/ip4/192.168.1.194/tcp/4100"), circuit},
@@ -99,16 +99,16 @@ func TestShareableAddrsKeepPublicOnes(t *testing.T) {
 				ma.StringCast("/ip4/127.0.0.1/tcp/4100"),
 				ma.StringCast("/ip6/::1/tcp/4100"), // Android: what the interface IPs replace
 				ma.StringCast("/ip4/192.168.1.194/tcp/4100"),
-				ma.StringCast("/ip4/81.196.7.219/tcp/4100"), // as the helper sees us
+				ma.StringCast("/ip4/198.51.100.7/tcp/4100"), // as the helper sees us
 			},
 		},
 		addrsFactory: withInterfaceIPs(func() ([]net.IP, error) {
-			return []net.IP{net.ParseIP("2a02:a58:fe81:9dd0::5")}, nil
+			return []net.IP{net.ParseIP("2001:db8:fe81:9dd0::5")}, nil
 		}, logging.Discard()),
 	}
 	got := addrStringsOf(n.ShareableAddrs())
-	require.Contains(t, got, "/ip4/81.196.7.219/tcp/4100", "public IPv4")
-	require.Contains(t, got, "/ip6/2a02:a58:fe81:9dd0::5/tcp/4100", "interface IPv6")
+	require.Contains(t, got, "/ip4/198.51.100.7/tcp/4100", "public IPv4")
+	require.Contains(t, got, "/ip6/2001:db8:fe81:9dd0::5/tcp/4100", "interface IPv6")
 	require.Contains(t, got, "/ip4/192.168.1.194/tcp/4100", "LAN")
 	require.Contains(t, got, circuit.String(), "relay")
 	require.Len(t, got, 6, "no duplicates: %v", got)

@@ -63,7 +63,7 @@ func TestContactAddressesReplaceStaleOnes(t *testing.T) {
 	a, b := pair(t)
 	b.setContact(t, a.id(), store.StateAccepted)
 
-	circuit := ma.StringCast("/ip4/62.83.39.196/tcp/4001/p2p/12D3KooWBNakK5JNCJdwkRDkhC6tZ9hBJ7B4NKTfBvfTacJ37L2z/p2p-circuit")
+	circuit := ma.StringCast("/ip4/203.0.113.7/tcp/4001/p2p/12D3KooWK5VRzX6ZXVBUEFp7RdUxSVKY5JN7dNWJcjRzjw8wwJVH/p2p-circuit")
 	a.svc.own = func() []ma.Multiaddr {
 		return []ma.Multiaddr{
 			ma.StringCast("/ip4/192.168.1.194/tcp/4100"),

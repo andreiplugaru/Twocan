@@ -114,7 +114,7 @@ func TestSaveAddrsPutsDirectFirst(t *testing.T) {
 	require.NoError(t, n.st.UpsertContact(t.Context(), store.Contact{PeerID: id, State: store.StateAccepted}))
 	var addrs []ma.Multiaddr
 	for range maxSavedAddrs {
-		addrs = append(addrs, ma.StringCast("/ip4/62.83.39.196/tcp/4001/p2p/"+randomPeer(t).String()+"/p2p-circuit"))
+		addrs = append(addrs, ma.StringCast("/ip4/203.0.113.7/tcp/4001/p2p/"+randomPeer(t).String()+"/p2p-circuit"))
 	}
 	lan := ma.StringCast("/ip4/192.168.1.194/tcp/4100")
 	n.h.Peerstore().AddAddrs(id, append(addrs, lan), time.Hour)
@@ -168,7 +168,7 @@ func TestSharesShareableAddrs(t *testing.T) {
 	require.NoError(t, err)
 	st, err := store.Open(filepath.Join(t.TempDir(), "twocan.db"))
 	require.NoError(t, err)
-	public := ma.StringCast("/ip4/81.196.7.219/tcp/4100")
+	public := ma.StringCast("/ip4/198.51.100.7/tcp/4100")
 	connInfo := func(id peer.ID) (bool, bool) { return h.Network().Connectedness(id) == network.Connected, false }
 	a, err := startWith(t.Context(), h, st, sharingReacher{mnReacher{mn: mn, self: h.ID()}, []ma.Multiaddr{public}}, connInfo, intervals{}, nil)
 	require.NoError(t, err)
