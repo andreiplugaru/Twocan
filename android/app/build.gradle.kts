@@ -19,7 +19,7 @@ fun versionCodeOf(version: String): Int {
 
 // The release signing key: a PKCS12 file whose key, alias "twocan", has the
 // file's password. Every release must be signed with it, or phones will not
-// install it as an update (see the README).
+// install it as an update (see docs/maintaining.md).
 val keystore: String? = providers.environmentVariable("TWOCAN_KEYSTORE").orNull
 
 android {

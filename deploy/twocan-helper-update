@@ -1,7 +1,7 @@
 #!/bin/sh
 # twocan-helper-update TAG installs twocan-helper from GitHub release TAG
 # and restarts it. The release workflow runs it over SSH after each release
-# (see the README, "Deploying the helper automatically").
+# (see docs/maintaining.md, "Deploying the helper automatically").
 #
 # While the repository is private, /etc/twocan-helper-update.token holds the
 # header line "Authorization: Bearer <read-only token>". Once it is public,
